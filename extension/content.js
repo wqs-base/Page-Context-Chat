@@ -226,9 +226,18 @@
       form.requestSubmit();
     }
   });
-  chrome.runtime.onMessage.addListener((request) => {
+  chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     if (request?.type === "TOGGLE_PAGE_CONTEXT_CHAT") {
       setOpen(!panel.classList.contains("open"));
+      return false;
     }
+    if (request?.type === "CAPTURE_PAGE_CONTEXT") {
+      try {
+        sendResponse({ ok: true, context: collectPageContext() });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message });
+      }
+    }
+    return false;
   });
 })();
