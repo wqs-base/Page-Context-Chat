@@ -111,6 +111,14 @@ PowerShell 调用示例：
 Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8090/capture"
 ```
 
+也可以在 Conda `agent` 环境运行响应契约测试：
+
+```powershell
+conda run --no-capture-output -n agent python .\server\test_capture_api.py
+```
+
+使用 `--output capture.json` 可将包含完整 HTML 的 JSON 响应保存到文件；还可通过 `--endpoint`、`--timeout` 和 `--preview` 调整测试参数。
+
 ## 上下文与隐私
 
 - 在用户发送聊天消息或本地程序调用 `/capture` 时采集上下文。
