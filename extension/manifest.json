@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Page Context Chat",
+  "version": "1.0.0",
+  "description": "Chat with a local service using the current page context.",
+  "permissions": [],
+  "host_permissions": [
+    "http://127.0.0.1:8090/*",
+    "http://localhost:8090/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "打开页面助手"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
