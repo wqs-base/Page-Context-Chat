@@ -189,7 +189,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.0.0" }
+      client: { name: "page-context-chat", version: "1.1.0" }
     };
 
     try {

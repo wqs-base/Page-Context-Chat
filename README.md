@@ -119,6 +119,58 @@ conda run --no-capture-output -n agent python .\server\test_capture_api.py
 
 使用 `--output capture.json` 可将包含完整 HTML 的 JSON 响应保存到文件；还可通过 `--endpoint`、`--timeout` 和 `--preview` 调整测试参数。
 
+## 执行 JavaScript
+
+任意 JavaScript 执行默认关闭。需要先停止旧服务，再使用高风险开关启动：
+
+```powershell
+python .\server\server.py --allow-js-execution
+```
+
+扩展需要重新加载并接受新增的 `debugger` 和 `tabs` 权限。执行时 Chrome 会显示调试器已附加提示。
+
+接口作用于当前聚焦 Chrome 窗口的活动 HTTP/HTTPS 标签页：
+
+```http
+POST http://127.0.0.1:8090/execute
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "code": "document.title"
+}
+```
+
+成功响应：
+
+```json
+{
+  "requestId": "62a3990a4c9f4a3e854afcdd14d0bb83",
+  "result": {
+    "type": "string",
+    "subtype": null,
+    "value": "Example",
+    "unserializableValue": null,
+    "description": null
+  }
+}
+```
+
+代码会在页面主 JavaScript 世界中通过 Chrome DevTools Protocol `Runtime.evaluate` 执行，支持等待 Promise。代码最大 256 KB，单次执行最长约 10 秒，接口等待扩展最长 15 秒。函数、DOM 节点和循环引用对象通常不能按值序列化，此时应检查 `type`、`subtype` 和 `description`。
+
+该接口允许读取登录态、修改页面和发起页面权限内的请求，仅适合受控的本地开发环境。服务仍只监听 `127.0.0.1`，拒绝普通网页来源，并且未带 `--allow-js-execution` 时返回 `403 js_execution_disabled`。此能力不适合发布到 Chrome Web Store。
+
+在 Conda `agent` 环境运行弹窗测试：
+
+```powershell
+conda run --no-capture-output -n agent python .\server\test_execute_api.py
+```
+
+脚本调用 `/execute` 后在当前活动页面延迟显示 `alert`，并校验 `requestId`、`result.type` 和 `result.value`。可通过 `--message`、`--delay`、`--endpoint` 和 `--timeout` 调整测试参数。
+
 ## 上下文与隐私
 
 - 在用户发送聊天消息或本地程序调用 `/capture` 时采集上下文。
@@ -127,3 +179,4 @@ conda run --no-capture-output -n agent python .\server\test_capture_api.py
 - 完整 HTML 可能包含隐藏内容、表单默认值、令牌或其他敏感信息；发送前应确认本地服务的处理和存储方式。
 - 本地示例服务的 HTTP 请求体和 WebSocket 单条消息上限均为 50 MB，超大页面无法完成采集。
 - `/capture` 不向普通网页开放 CORS，WebSocket 也会拒绝普通网页来源，防止网站读取当前活动页内容。
+- `/execute` 具有任意页面代码执行能力，应仅在需要时使用启动开关临时启用。

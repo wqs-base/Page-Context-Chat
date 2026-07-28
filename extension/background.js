@@ -36,7 +36,7 @@ function connectSocket() {
   socket = new WebSocket(SOCKET_ENDPOINT);
   socket.addEventListener("open", () => {
     reconnectDelay = 1000;
-    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.0.0" });
+    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.1.0" });
     clearInterval(keepaliveTimer);
     keepaliveTimer = setInterval(() => sendSocketMessage({ type: "ping" }), KEEPALIVE_INTERVAL_MS);
   });
@@ -49,6 +49,8 @@ function connectSocket() {
     }
     if (message?.type === "capture_page" && typeof message.requestId === "string") {
       await captureActivePage(message.requestId);
+    } else if (message?.type === "execute_script" && typeof message.requestId === "string") {
+      await executeInActivePage(message.requestId, message.code);
     }
   });
   socket.addEventListener("close", () => {
@@ -81,6 +83,61 @@ async function captureActivePage(requestId) {
         message: `无法采集当前活动页：${error.message}`
       }
     });
+  }
+}
+
+async function executeInActivePage(requestId, code) {
+  let debuggee = null;
+  try {
+    if (typeof code !== "string" || !code.trim()) {
+      throw new Error("服务端未提供有效的 JavaScript 代码");
+    }
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id || !/^https?:\/\//.test(tab.url || "")) {
+      throw new Error("当前活动页不是可执行的 HTTP/HTTPS 页面");
+    }
+
+    debuggee = { tabId: tab.id };
+    await chrome.debugger.attach(debuggee, "1.3");
+    const response = await chrome.debugger.sendCommand(debuggee, "Runtime.evaluate", {
+      expression: code,
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: true,
+      timeout: 10000
+    });
+    if (response.exceptionDetails) {
+      const details = response.exceptionDetails;
+      throw new Error(details.exception?.description || details.text || "JavaScript 执行失败");
+    }
+
+    const remote = response.result || {};
+    sendSocketMessage({
+      type: "execute_result",
+      requestId,
+      ok: true,
+      result: {
+        type: remote.type || "undefined",
+        subtype: remote.subtype || null,
+        value: Object.hasOwn(remote, "value") ? remote.value : null,
+        unserializableValue: remote.unserializableValue || null,
+        description: remote.description || null
+      }
+    });
+  } catch (error) {
+    sendSocketMessage({
+      type: "execute_result",
+      requestId,
+      ok: false,
+      error: {
+        code: "execution_failed",
+        message: `无法在当前活动页执行 JavaScript：${error.message}`
+      }
+    });
+  } finally {
+    if (debuggee) {
+      await chrome.debugger.detach(debuggee).catch(() => {});
+    }
   }
 }
 

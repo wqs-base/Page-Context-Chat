@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import json
 import uuid
 from typing import Any
@@ -15,6 +16,8 @@ HOST = "127.0.0.1"
 PORT = 8090
 MAX_BODY_BYTES = 50 * 1024 * 1024
 CAPTURE_TIMEOUT_SECONDS = 15
+EXECUTE_TIMEOUT_SECONDS = 15
+MAX_SCRIPT_BYTES = 256 * 1024
 
 
 def json_error(status: int, code: str, message: str) -> web.Response:
@@ -40,6 +43,17 @@ class CaptureBroker:
                 })
 
     async def request_capture(self) -> tuple[str, dict[str, Any]]:
+        return await self._request("capture_page", {}, CAPTURE_TIMEOUT_SECONDS)
+
+    async def request_execution(self, code: str) -> tuple[str, dict[str, Any]]:
+        return await self._request("execute_script", {"code": code}, EXECUTE_TIMEOUT_SECONDS)
+
+    async def _request(
+        self,
+        command_type: str,
+        command: dict[str, Any],
+        timeout: float,
+    ) -> tuple[str, dict[str, Any]]:
         socket = next((item for item in reversed(self.connections) if not item.closed), None)
         if socket is None:
             raise ConnectionError("没有已连接的 Chrome 扩展")
@@ -50,14 +64,15 @@ class CaptureBroker:
         try:
             try:
                 await socket.send_json({
-                    "type": "capture_page",
+                    "type": command_type,
                     "requestId": request_id,
                     "target": "active",
+                    **command,
                 })
             except (ConnectionError, RuntimeError) as error:
                 self.unregister(socket)
                 raise ConnectionError("Chrome 扩展连接已断开") from error
-            result = await asyncio.wait_for(future, timeout=CAPTURE_TIMEOUT_SECONDS)
+            result = await asyncio.wait_for(future, timeout=timeout)
             return request_id, result
         finally:
             self.pending.pop(request_id, None)
@@ -70,6 +85,7 @@ class CaptureBroker:
 
 
 BROKER_KEY = web.AppKey("capture_broker", CaptureBroker)
+JS_EXECUTION_KEY = web.AppKey("allow_js_execution", bool)
 
 
 @web.middleware
@@ -137,6 +153,43 @@ async def capture(request: web.Request) -> web.Response:
     return web.json_response({"requestId": request_id, "context": context})
 
 
+async def execute_script(request: web.Request) -> web.Response:
+    if not request.app[JS_EXECUTION_KEY]:
+        return json_error(403, "js_execution_disabled", "服务启动时未启用 JavaScript 执行")
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return json_error(400, "invalid_json", "请求体必须是有效的 UTF-8 JSON")
+    if not isinstance(payload, dict):
+        return json_error(400, "invalid_body", "请求体必须是 JSON 对象")
+
+    code = payload.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return json_error(400, "invalid_code", "code 必须是非空字符串")
+    if len(code.encode("utf-8")) > MAX_SCRIPT_BYTES:
+        return json_error(413, "code_too_large", f"code 不能超过 {MAX_SCRIPT_BYTES} 字节")
+
+    broker = request.app[BROKER_KEY]
+    try:
+        request_id, result = await broker.request_execution(code)
+    except ConnectionError as error:
+        return json_error(503, "extension_unavailable", str(error))
+    except TimeoutError:
+        return json_error(504, "execution_timeout", "等待扩展执行 JavaScript 超时")
+
+    if not result.get("ok"):
+        error = result.get("error") if isinstance(result.get("error"), dict) else {}
+        return json_error(
+            422,
+            str(error.get("code") or "execution_failed"),
+            str(error.get("message") or "扩展无法执行 JavaScript"),
+        )
+    execution_result = result.get("result")
+    if not isinstance(execution_result, dict):
+        return json_error(502, "invalid_extension_response", "扩展响应缺少 result 对象")
+    return web.json_response({"requestId": request_id, "result": execution_result})
+
+
 async def extension_socket(request: web.Request) -> web.WebSocketResponse:
     socket = web.WebSocketResponse(heartbeat=25, max_msg_size=MAX_BODY_BYTES)
     await socket.prepare(request)
@@ -155,7 +208,7 @@ async def extension_socket(request: web.Request) -> web.WebSocketResponse:
                 continue
             if not isinstance(payload, dict):
                 continue
-            if payload.get("type") == "capture_result":
+            if payload.get("type") in {"capture_result", "execute_result"}:
                 broker.resolve(payload)
             elif payload.get("type") == "ping":
                 await socket.send_json({"type": "pong"})
@@ -189,13 +242,15 @@ def build_placeholder_reply(message: str, context: dict[str, Any]) -> str:
     )
 
 
-def create_app() -> web.Application:
+def create_app(*, allow_js_execution: bool = False) -> web.Application:
     app = web.Application(middlewares=[origin_guard], client_max_size=MAX_BODY_BYTES)
     app[BROKER_KEY] = CaptureBroker()
+    app[JS_EXECUTION_KEY] = allow_js_execution
     app.add_routes([
         web.get("/health", health),
         web.post("/chat", chat),
         web.post("/capture", capture),
+        web.post("/execute", execute_script),
         web.get("/ws", extension_socket),
         web.options("/{path:.*}", health),
     ])
@@ -204,8 +259,22 @@ def create_app() -> web.Application:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Page Context Chat local service")
+    parser.add_argument(
+        "--allow-js-execution",
+        action="store_true",
+        help="enable the high-risk POST /execute endpoint",
+    )
+    args = parser.parse_args()
     print(f"Page Context Chat server listening on http://{HOST}:{PORT}")
-    web.run_app(create_app(), host=HOST, port=PORT, print=None)
+    if args.allow_js_execution:
+        print("WARNING: arbitrary JavaScript execution is enabled for the active browser tab")
+    web.run_app(
+        create_app(allow_js_execution=args.allow_js_execution),
+        host=HOST,
+        port=PORT,
+        print=None,
+    )
 
 
 if __name__ == "__main__":
