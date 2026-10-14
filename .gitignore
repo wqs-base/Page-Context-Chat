@@ -1,2 +1,6 @@
 __pycache__/
 *.py[cod]
+
+# PyInstaller 构建产物
+build/
+dist/

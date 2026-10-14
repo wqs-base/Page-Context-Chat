@@ -129,6 +129,8 @@ chrome-dom-chat/
 `-- server/
     |-- requirements.txt       # aiohttp 依赖
     |-- server.py              # HTTP/WebSocket 本地服务
+    |-- build_exe.ps1          # PyInstaller 打包脚本
+    |-- page_context_chat_server.spec   # PyInstaller 打包配置
     |-- test_server.py         # 服务端异步协议单元测试
     |-- test_capture_api.py    # /capture 集成测试脚本
     |-- test_click_api.py      # /click 虚拟光标点击集成测试脚本
@@ -599,6 +601,48 @@ conda run --no-capture-output -n agent python .\server\test_click_api.py --selec
 --selector CSS    要点击元素的 CSS 选择器，默认 a[href]
 --timeout SEC     HTTP 超时，默认 20 秒
 ```
+
+## 打包与分发
+
+可以用 PyInstaller 把本地服务打包成单个可执行文件，目标机器无需安装 Python 或 aiohttp。
+
+### 构建
+
+先安装构建依赖：
+
+```powershell
+python -m pip install pyinstaller
+```
+
+在项目根目录执行打包脚本：
+
+```powershell
+pwsh -File .\server\build_exe.ps1
+# 或指定解释器
+pwsh -File .\server\build_exe.ps1 -Python "D:\miniforge3\envs\agent\python.exe"
+```
+
+也可以直接调用 spec：
+
+```powershell
+python -m PyInstaller --noconfirm --clean `
+  --distpath server/dist --workpath server/build `
+  server/page_context_chat_server.spec
+```
+
+产物为单文件控制台程序 `server/dist/page-context-chat-server.exe`（约 37 MB）。`build/` 与 `dist/` 已在 `.gitignore` 中忽略。
+
+### 运行
+
+```powershell
+.\server\dist\page-context-chat-server.exe
+.\server\dist\page-context-chat-server.exe --allow-interaction
+.\server\dist\page-context-chat-server.exe --allow-js-execution --allow-interaction
+```
+
+启动参数、监听地址、接口行为与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），分发时只需拷贝该 exe。
+
+单文件模式每次启动会把内容解压到临时目录，首次启动略慢；若在意启动速度，可在 spec 中把 `EXE(...)` 拆成 `EXE` + `COLLECT` 生成目录形式。
 
 ## 停止服务
 
