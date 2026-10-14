@@ -640,15 +640,23 @@ python -m PyInstaller --noconfirm --clean `
 
 ### 运行
 
-```powershell
-.\server\dist\page-context-chat-server.exe
-.\server\dist\page-context-chat-server.exe --allow-interaction
-.\server\dist\page-context-chat-server.exe --allow-js-execution --allow-interaction
-```
+`page-context-chat-server.exe` 的启动参数与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），提供以下启动模式：
 
-启动参数、监听地址、接口行为与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），分发时只需拷贝该 exe。
+| 模式 | 命令 | 额外开放的接口 |
+|---|---|---|
+| 普通模式（默认） | `.\server\dist\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
+| 页面交互模式 | `.\server\dist\page-context-chat-server.exe --allow-interaction` | `/click` |
+| JavaScript 执行模式 | `.\server\dist\page-context-chat-server.exe --allow-js-execution` | `/execute` |
+| 完整模式 | `.\server\dist\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/execute` |
 
-单文件模式每次启动会把内容解压到临时目录，首次启动略慢；若在意启动速度，可在 spec 中把 `EXE(...)` 拆成 `EXE` + `COLLECT` 生成目录形式。
+说明：
+
+- `--allow-interaction` 启用虚拟光标点击 `/click`，`--allow-js-execution` 启用任意 JavaScript 执行 `/execute`；两者默认关闭，可独立或同时使用，未启用时分别返回 `403 interaction_disabled` 和 `403 js_execution_disabled`。
+- 直接双击 exe 等同于无参数启动普通模式。程序带控制台窗口运行，启动时会打印监听地址，启用高风险参数时会额外打印警告。
+- 监听地址固定为 `http://127.0.0.1:8090`，接口路由与行为同源码方式一致，分发时只需拷贝该 exe。
+- 停止服务：在运行窗口按 `Ctrl+C`。需要后台运行时可用 `Start-Process`，按端口停止的方法见「停止服务」一节。
+- 单文件模式每次启动会把内容解压到临时目录，首次启动略慢，属正常现象；若在意启动速度，可在 spec 中把 `EXE(...)` 拆成 `EXE` + `COLLECT` 生成目录形式。
+- 当前 exe 为 Windows 64 位构建（Python 3.11 + aiohttp 3.14），其它平台需在对应系统上各自构建。
 
 ## 停止服务
 
