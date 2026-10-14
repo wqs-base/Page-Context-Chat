@@ -189,7 +189,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.1.0" }
+      client: { name: "page-context-chat", version: "1.3.0" }
     };
 
     try {
@@ -226,6 +226,244 @@
       form.requestSubmit();
     }
   });
+  // --- 虚拟光标 ---------------------------------------------------------
+  const CURSOR_MOVE_DURATION_MS = 420;
+
+  const cursorHost = document.createElement("div");
+  cursorHost.id = "page-context-chat-cursor";
+  cursorHost.style.cssText =
+    "position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647;";
+  const cursorShadow = cursorHost.attachShadow({ mode: "closed" });
+  cursorShadow.innerHTML = `
+    <style>
+      .cursor {
+        position: fixed; left: 0; top: 0; width: 0; height: 0;
+        transform: translate(-100px, -100px);
+        will-change: transform;
+        filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .35));
+      }
+      .arrow { display: block; }
+      .pulse {
+        position: absolute; left: 0; top: 0; width: 14px; height: 14px;
+        margin: -7px 0 0 -7px; border-radius: 50%;
+        background: rgba(23, 107, 82, .35); border: 2px solid #176b52;
+        opacity: 0; transform: scale(.4); pointer-events: none;
+      }
+      .pulse.on { animation: page-context-cursor-pulse .55s ease-out; }
+      @keyframes page-context-cursor-pulse {
+        0% { opacity: .8; transform: scale(.4); }
+        100% { opacity: 0; transform: scale(2.6); }
+      }
+    </style>
+    <div class="cursor">
+      <div class="pulse"></div>
+      <svg class="arrow" width="22" height="30" viewBox="0 0 22 30" aria-hidden="true">
+        <path d="M3 2 L3 24 L9 18 L12.5 26 L16 24.5 L12.5 16.5 L20 16.5 Z"
+              fill="#ffffff" stroke="#111111" stroke-width="1.6" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  `;
+  document.documentElement.appendChild(cursorHost);
+
+  const cursorEl = cursorShadow.querySelector(".cursor");
+  const pulseEl = cursorShadow.querySelector(".pulse");
+  let cursorX = Math.round(window.innerWidth / 2);
+  let cursorY = Math.round(window.innerHeight / 2);
+  let cursorAnimation = null;
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
+  function placeCursor(x, y) {
+    cursorX = x;
+    cursorY = y;
+    cursorEl.style.transform = `translate(${x}px, ${y}px)`;
+  }
+
+  function nextFrame() {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function animateCursorTo(x, y, duration = CURSOR_MOVE_DURATION_MS) {
+    if (cursorAnimation) {
+      cancelAnimationFrame(cursorAnimation);
+      cursorAnimation = null;
+    }
+    if (duration <= 0 || (x === cursorX && y === cursorY)) {
+      placeCursor(x, y);
+      return Promise.resolve();
+    }
+    const startX = cursorX;
+    const startY = cursorY;
+    const startTime = performance.now();
+    return new Promise((resolve) => {
+      function step(now) {
+        const progress = Math.min(1, (now - startTime) / duration);
+        const eased = progress < 0.5
+          ? 4 * progress * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+        placeCursor(startX + (x - startX) * eased, startY + (y - startY) * eased);
+        if (progress < 1) {
+          cursorAnimation = requestAnimationFrame(step);
+        } else {
+          cursorAnimation = null;
+          resolve();
+        }
+      }
+      cursorAnimation = requestAnimationFrame(step);
+    });
+  }
+
+  const CLICKABLE_SELECTOR = [
+    "a[href]", "button", "summary", "label",
+    "input[type='submit']", "input[type='button']", "input[type='reset']",
+    "[role='button']", "[role='link']", "[role='tab']", "[role='menuitem']", "[role='option']"
+  ].join(", ");
+
+  function elementLabel(element) {
+    const raw = element.innerText
+      || element.textContent
+      || element.value
+      || element.getAttribute("aria-label")
+      || element.getAttribute("title")
+      || "";
+    return normalizeText(raw, 200).toLowerCase();
+  }
+
+  function isVisibleElement(element) {
+    if (element.closest("[hidden], [aria-hidden='true']")) {
+      return false;
+    }
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 && rect.height <= 0) {
+      return false;
+    }
+    const style = getComputedStyle(element);
+    return style.visibility !== "hidden" && style.display !== "none" && style.opacity !== "0";
+  }
+
+  function resolveTargetElement(selector) {
+    const query = selector.trim();
+    const mode = query.startsWith("text*=") ? "contains" : query.startsWith("text=") ? "equals" : null;
+    if (mode) {
+      const wanted = query.slice(mode === "contains" ? 6 : 5).trim().toLowerCase();
+      if (!wanted) {
+        throw new Error("text= 之后需要提供要匹配的文字");
+      }
+      const candidates = Array.from(document.querySelectorAll(CLICKABLE_SELECTOR)).filter(isVisibleElement);
+      const match = candidates.find((element) => {
+        const label = elementLabel(element);
+        return mode === "contains" ? label.includes(wanted) : label === wanted;
+      });
+      if (!match) {
+        throw new Error(`未找到文字为「${query.slice(mode === "contains" ? 6 : 5).trim()}」的可点击元素`);
+      }
+      return match;
+    }
+
+    let element;
+    try {
+      element = document.querySelector(query);
+    } catch (error) {
+      throw new Error(`无效的 CSS 选择器：${error.message}`);
+    }
+    if (!element) {
+      throw new Error(`未找到匹配的元素：${query}`);
+    }
+    return element;
+  }
+
+  async function moveVirtualCursorToSelector(selector) {
+    if (typeof selector !== "string" || !selector.trim()) {
+      throw new Error("选择器不能为空");
+    }
+    const element = resolveTargetElement(selector);
+
+    const previousScrollBehavior = document.documentElement.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = "auto";
+    element.scrollIntoView({ block: "center", inline: "center" });
+    document.documentElement.style.scrollBehavior = previousScrollBehavior;
+    await nextFrame();
+    await nextFrame();
+    await delay(50);
+
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight
+      || rect.right < 0 || rect.left > window.innerWidth) {
+      throw new Error("目标元素不在可视区域内");
+    }
+
+    const x = clamp(rect.left + rect.width / 2, 0, Math.max(window.innerWidth - 1, 0));
+    const y = clamp(rect.top + rect.height / 2, 0, Math.max(window.innerHeight - 1, 0));
+
+    await animateCursorTo(x, y);
+    return {
+      x,
+      y,
+      tag: element.tagName.toLowerCase(),
+      text: normalizeText(element.innerText || element.getAttribute("aria-label") || "", 120)
+    };
+  }
+
+  function pulseCursor(ok) {
+    pulseEl.style.background = ok ? "rgba(23, 107, 82, .35)" : "rgba(139, 41, 37, .30)";
+    pulseEl.style.borderColor = ok ? "#176b52" : "#8b2925";
+    pulseEl.classList.remove("on");
+    void pulseEl.offsetWidth;
+    pulseEl.classList.add("on");
+  }
+
+  placeCursor(cursorX, cursorY);
+  window.addEventListener("resize", () => {
+    placeCursor(
+      clamp(cursorX, 0, Math.max(window.innerWidth - 1, 0)),
+      clamp(cursorY, 0, Math.max(window.innerHeight - 1, 0))
+    );
+  });
+
+  // --- DOM 自愈：SPA（如 GitHub Turbo）替换 DOM 后重新挂载注入节点 --------
+  function ensureOverlaysAttached() {
+    const parent = document.documentElement || document.body;
+    if (!parent) {
+      return;
+    }
+    if (!cursorHost.isConnected) {
+      parent.appendChild(cursorHost);
+    }
+    if (!host.isConnected) {
+      parent.appendChild(host);
+    }
+  }
+
+  let reattachQueued = false;
+  function queueReattach() {
+    if (reattachQueued) {
+      return;
+    }
+    reattachQueued = true;
+    setTimeout(() => {
+      reattachQueued = false;
+      ensureOverlaysAttached();
+    }, 0);
+  }
+
+  const overlayObserver = new MutationObserver(() => {
+    if (cursorHost.isConnected && host.isConnected) {
+      return;
+    }
+    queueReattach();
+  });
+  overlayObserver.observe(document, { childList: true, subtree: true });
+  document.addEventListener("turbo:load", ensureOverlaysAttached, true);
+  document.addEventListener("turbo:render", ensureOverlaysAttached, true);
+  document.addEventListener("pjax:end", ensureOverlaysAttached, true);
+  window.addEventListener("pageshow", ensureOverlaysAttached);
+
   chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     if (request?.type === "TOGGLE_PAGE_CONTEXT_CHAT") {
       setOpen(!panel.classList.contains("open"));
@@ -237,6 +475,17 @@
       } catch (error) {
         sendResponse({ ok: false, error: error.message });
       }
+      return false;
+    }
+    if (request?.type === "MOVE_VIRTUAL_CURSOR") {
+      moveVirtualCursorToSelector(request.selector)
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+    }
+    if (request?.type === "CLICK_FEEDBACK") {
+      pulseCursor(Boolean(request.ok));
+      return false;
     }
     return false;
   });

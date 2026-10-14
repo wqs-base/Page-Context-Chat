@@ -36,7 +36,7 @@ function connectSocket() {
   socket = new WebSocket(SOCKET_ENDPOINT);
   socket.addEventListener("open", () => {
     reconnectDelay = 1000;
-    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.1.0" });
+    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.3.0" });
     clearInterval(keepaliveTimer);
     keepaliveTimer = setInterval(() => sendSocketMessage({ type: "ping" }), KEEPALIVE_INTERVAL_MS);
   });
@@ -51,6 +51,8 @@ function connectSocket() {
       await captureActivePage(message.requestId);
     } else if (message?.type === "execute_script" && typeof message.requestId === "string") {
       await executeInActivePage(message.requestId, message.code);
+    } else if (message?.type === "click_element" && typeof message.requestId === "string") {
+      await clickInActivePage(message.requestId, message.selector);
     }
   });
   socket.addEventListener("close", () => {
@@ -132,6 +134,78 @@ async function executeInActivePage(requestId, code) {
       error: {
         code: "execution_failed",
         message: `无法在当前活动页执行 JavaScript：${error.message}`
+      }
+    });
+  } finally {
+    if (debuggee) {
+      await chrome.debugger.detach(debuggee).catch(() => {});
+    }
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function clickInActivePage(requestId, selector) {
+  let debuggee = null;
+  let tabId = null;
+  try {
+    if (typeof selector !== "string" || !selector.trim()) {
+      throw new Error("服务端未提供有效的选择器");
+    }
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id || !/^https?:\/\//.test(tab.url || "")) {
+      throw new Error("当前活动页不是可交互的 HTTP/HTTPS 页面");
+    }
+    tabId = tab.id;
+
+    const target = await chrome.tabs.sendMessage(tabId, {
+      type: "MOVE_VIRTUAL_CURSOR",
+      selector: selector.trim()
+    });
+    if (!target?.ok) {
+      throw new Error(target?.error || "无法定位目标元素");
+    }
+
+    debuggee = { tabId };
+    await chrome.debugger.attach(debuggee, "1.3");
+    const point = { x: target.x, y: target.y };
+    await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+      ...point, type: "mouseMoved", button: "none", buttons: 0, clickCount: 0
+    });
+    await delay(60);
+    await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+      ...point, type: "mousePressed", button: "left", buttons: 1, clickCount: 1
+    });
+    await chrome.debugger.sendCommand(debuggee, "Input.dispatchMouseEvent", {
+      ...point, type: "mouseReleased", button: "left", buttons: 0, clickCount: 1
+    });
+
+    chrome.tabs.sendMessage(tabId, { type: "CLICK_FEEDBACK", ok: true }).catch(() => {});
+    sendSocketMessage({
+      type: "click_result",
+      requestId,
+      ok: true,
+      result: {
+        selector: selector.trim(),
+        x: target.x,
+        y: target.y,
+        tag: target.tag || "",
+        text: target.text || ""
+      }
+    });
+  } catch (error) {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, { type: "CLICK_FEEDBACK", ok: false }).catch(() => {});
+    }
+    sendSocketMessage({
+      type: "click_result",
+      requestId,
+      ok: false,
+      error: {
+        code: "click_failed",
+        message: `无法在活动页面点击目标元素：${error.message}`
       }
     });
   } finally {

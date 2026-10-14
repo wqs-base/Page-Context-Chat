@@ -17,6 +17,7 @@ PORT = 8090
 MAX_BODY_BYTES = 50 * 1024 * 1024
 CAPTURE_TIMEOUT_SECONDS = 15
 EXECUTE_TIMEOUT_SECONDS = 15
+CLICK_TIMEOUT_SECONDS = 15
 MAX_SCRIPT_BYTES = 256 * 1024
 
 
@@ -47,6 +48,9 @@ class CaptureBroker:
 
     async def request_execution(self, code: str) -> tuple[str, dict[str, Any]]:
         return await self._request("execute_script", {"code": code}, EXECUTE_TIMEOUT_SECONDS)
+
+    async def request_click(self, selector: str) -> tuple[str, dict[str, Any]]:
+        return await self._request("click_element", {"selector": selector}, CLICK_TIMEOUT_SECONDS)
 
     async def _request(
         self,
@@ -86,6 +90,7 @@ class CaptureBroker:
 
 BROKER_KEY = web.AppKey("capture_broker", CaptureBroker)
 JS_EXECUTION_KEY = web.AppKey("allow_js_execution", bool)
+INTERACTION_KEY = web.AppKey("allow_interaction", bool)
 
 
 @web.middleware
@@ -190,6 +195,41 @@ async def execute_script(request: web.Request) -> web.Response:
     return web.json_response({"requestId": request_id, "result": execution_result})
 
 
+async def click_element(request: web.Request) -> web.Response:
+    if not request.app[INTERACTION_KEY]:
+        return json_error(403, "interaction_disabled", "服务启动时未启用页面交互控制")
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return json_error(400, "invalid_json", "请求体必须是有效的 UTF-8 JSON")
+    if not isinstance(payload, dict):
+        return json_error(400, "invalid_body", "请求体必须是 JSON 对象")
+
+    selector = payload.get("selector")
+    if not isinstance(selector, str) or not selector.strip():
+        return json_error(400, "invalid_selector", "selector 必须是非空字符串")
+
+    broker = request.app[BROKER_KEY]
+    try:
+        request_id, result = await broker.request_click(selector.strip())
+    except ConnectionError as error:
+        return json_error(503, "extension_unavailable", str(error))
+    except TimeoutError:
+        return json_error(504, "click_timeout", "等待扩展完成点击超时")
+
+    if not result.get("ok"):
+        error = result.get("error") if isinstance(result.get("error"), dict) else {}
+        return json_error(
+            422,
+            str(error.get("code") or "click_failed"),
+            str(error.get("message") or "扩展无法点击目标元素"),
+        )
+    click_result = result.get("result")
+    if not isinstance(click_result, dict):
+        return json_error(502, "invalid_extension_response", "扩展响应缺少 result 对象")
+    return web.json_response({"requestId": request_id, "result": click_result})
+
+
 async def extension_socket(request: web.Request) -> web.WebSocketResponse:
     socket = web.WebSocketResponse(heartbeat=25, max_msg_size=MAX_BODY_BYTES)
     await socket.prepare(request)
@@ -208,7 +248,7 @@ async def extension_socket(request: web.Request) -> web.WebSocketResponse:
                 continue
             if not isinstance(payload, dict):
                 continue
-            if payload.get("type") in {"capture_result", "execute_result"}:
+            if payload.get("type") in {"capture_result", "execute_result", "click_result"}:
                 broker.resolve(payload)
             elif payload.get("type") == "ping":
                 await socket.send_json({"type": "pong"})
@@ -242,15 +282,17 @@ def build_placeholder_reply(message: str, context: dict[str, Any]) -> str:
     )
 
 
-def create_app(*, allow_js_execution: bool = False) -> web.Application:
+def create_app(*, allow_js_execution: bool = False, allow_interaction: bool = False) -> web.Application:
     app = web.Application(middlewares=[origin_guard], client_max_size=MAX_BODY_BYTES)
     app[BROKER_KEY] = CaptureBroker()
     app[JS_EXECUTION_KEY] = allow_js_execution
+    app[INTERACTION_KEY] = allow_interaction
     app.add_routes([
         web.get("/health", health),
         web.post("/chat", chat),
         web.post("/capture", capture),
         web.post("/execute", execute_script),
+        web.post("/click", click_element),
         web.get("/ws", extension_socket),
         web.options("/{path:.*}", health),
     ])
@@ -265,12 +307,22 @@ def main() -> None:
         action="store_true",
         help="enable the high-risk POST /execute endpoint",
     )
+    parser.add_argument(
+        "--allow-interaction",
+        action="store_true",
+        help="enable the high-risk POST /click virtual-cursor endpoint",
+    )
     args = parser.parse_args()
     print(f"Page Context Chat server listening on http://{HOST}:{PORT}")
     if args.allow_js_execution:
         print("WARNING: arbitrary JavaScript execution is enabled for the active browser tab")
+    if args.allow_interaction:
+        print("WARNING: virtual-cursor clicking is enabled for the active browser tab")
     web.run_app(
-        create_app(allow_js_execution=args.allow_js_execution),
+        create_app(
+            allow_js_execution=args.allow_js_execution,
+            allow_interaction=args.allow_interaction,
+        ),
         host=HOST,
         port=PORT,
         print=None,

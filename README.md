@@ -68,6 +68,16 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 
 该能力可以读取登录态、修改页面、调用页面脚本并发起页面权限内的请求，只适合受控本地开发环境，不适合发布到 Chrome Web Store。
 
+### 虚拟光标点击
+
+- 内容脚本会在每个注入页面中常驻显示一个虚拟光标（箭头 + 点击反馈圆环），光标不拦截页面交互（`pointer-events: none`）。
+- `/click` 默认关闭，只有使用 `--allow-interaction` 启动服务时才开放。
+- 调用方传入 CSS 选择器，或 `text=` / `text*=` 文本选择器，服务端通过 WebSocket 下发 `click_element`。
+- 扩展先让目标元素滚动到可视区域中央，再让虚拟光标平滑移动到元素中心，最后通过 CDP `Input.dispatchMouseEvent` 在坐标点派发 `mouseMoved`、`mousePressed`、`mouseReleased`，产生 `isTrusted` 的真实鼠标点击。
+- 点击成功用绿色圆环反馈，失败用红色圆环反馈。
+- 注入的聊天组件和虚拟光标会在 DOM 被替换后自动重新挂载，兼容 GitHub 等采用 Turbo/SPA 软导航的页面。
+- 仅允许当前活动的 HTTP/HTTPS 标签页；单次点击等待上限为 15 秒。
+
 ## 系统架构
 
 ```mermaid
@@ -95,6 +105,13 @@ flowchart LR
     SW -->|CDP Runtime.evaluate| PAGE
     PAGE -->|result| SW
     SW -->|execute_result| API
+
+    U -->|POST /click| API
+    API -->|click_element / WebSocket| SW
+    SW -->|MOVE_VIRTUAL_CURSOR| UI
+    UI -->|cursor moves to target / x,y| SW
+    SW -->|CDP Input.dispatchMouseEvent| PAGE
+    SW -->|click_result| API
 ```
 
 服务端使用 `requestId` 关联并发命令和异步 WebSocket 回包。存在多个扩展连接时，当前实现选择最后建立且仍然存活的连接。
@@ -114,6 +131,7 @@ chrome-dom-chat/
     |-- server.py              # HTTP/WebSocket 本地服务
     |-- test_server.py         # 服务端异步协议单元测试
     |-- test_capture_api.py    # /capture 集成测试脚本
+    |-- test_click_api.py      # /click 虚拟光标点击集成测试脚本
     `-- test_execute_api.py    # /execute alert 集成测试脚本
 ```
 
@@ -163,7 +181,18 @@ python .\server\server.py --allow-js-execution
 
 启动时会输出高风险警告。未提供该参数时，`POST /execute` 返回 `403 js_execution_disabled`。
 
-### 4. 加载 Chrome Extension
+### 4. 启动页面交互模式
+
+虚拟光标点击同样默认关闭，需要显式启用；两个高风险参数可以同时使用：
+
+```powershell
+python .\server\server.py --allow-interaction
+python .\server\server.py --allow-js-execution --allow-interaction
+```
+
+未提供 `--allow-interaction` 时，`POST /click` 返回 `403 interaction_disabled`。
+
+### 5. 加载 Chrome Extension
 
 1. 打开 `chrome://extensions/`。
 2. 启用“开发者模式”。
@@ -174,7 +203,7 @@ python .\server\server.py --allow-js-execution
 
 代码或 Manifest 更新后，需要在 `chrome://extensions/` 中点击扩展的“重新加载”，并刷新目标页面。
 
-### 5. 使用聊天组件
+### 6. 使用聊天组件
 
 点击页面右下角“页面助手”，输入问题并发送。当前 `server.py` 只返回占位回答，用于验证页面上下文和通信链路；接入模型或业务服务时可替换 `build_placeholder_reply()`。
 
@@ -186,6 +215,7 @@ python .\server\server.py --allow-js-execution
 | `POST` | `/chat` | 接收聊天消息和页面上下文 | 是 |
 | `POST` | `/capture` | 主动采集当前活动页 | 是 |
 | `POST` | `/execute` | 在当前活动页执行 JavaScript | 否，需要启动参数 |
+| `POST` | `/click` | 用虚拟光标移动并点击当前活动页元素 | 否，需要启动参数 |
 | `GET` | `/ws` | 扩展与服务端内部 WebSocket 通道 | 是 |
 
 服务端只绑定回环地址，不接受其他机器连接。
@@ -376,6 +406,76 @@ Invoke-RestMethod `
 - `503 extension_unavailable`
 - `504 execution_timeout`
 
+### `POST /click`
+
+必须使用 `--allow-interaction` 启动服务。请求让虚拟光标移动到目标元素中心并点击。`selector` 支持两种写法：
+
+- **CSS 选择器**：直接写标准选择器，例如 `#submit-button`、`a[href$="/issues"]`。
+- **文本选择器**：`text=完全匹配` 或 `text*=包含匹配`，在可见的可点击元素（链接、按钮、`role=button` 等）中按文字定位，例如 `text=Code`、`text*=提交`。适合按界面标签点击、但标签没有稳定 id/class 的场景。
+
+```http
+POST http://127.0.0.1:8090/click
+Content-Type: application/json
+```
+
+请求（CSS 选择器）：
+
+```json
+{
+  "selector": "#submit-button"
+}
+```
+
+请求（文本选择器）：
+
+```json
+{
+  "selector": "text=Code"
+}
+```
+
+PowerShell 示例：
+
+```powershell
+$body = @{ selector = "#submit-button" } | ConvertTo-Json
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8090/click" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+成功响应：
+
+```json
+{
+  "requestId": "0f3a1c9d6b5e4f0a93d2ce7a4b1f8e60",
+  "result": {
+    "selector": "#submit-button",
+    "x": 640,
+    "y": 412,
+    "tag": "button",
+    "text": "提交"
+  }
+}
+```
+
+`result.x` 与 `result.y` 是点击发生时的视口坐标（CSS 像素），`tag` 和 `text` 是实际命中元素的信息，便于调用方核对。
+
+可能的错误：
+
+- `400 invalid_json`
+- `400 invalid_body`
+- `400 invalid_selector`
+- `403 interaction_disabled`
+- `403 origin_forbidden`
+- `422 click_failed`：选择器无效、未找到元素、元素不在可视区域、页面不支持或调试器被占用等。
+- `502 invalid_extension_response`
+- `503 extension_unavailable`
+- `504 click_timeout`
+
+虚拟光标由内容脚本提供并常驻显示，点击本身通过 CDP 在页面主世界派发真实鼠标事件，因此目标页面能收到 `isTrusted` 为 `true` 的点击。
+
 ### `GET /ws`
 
 该接口供扩展内部使用，不是普通业务调用接口。主要消息类型：
@@ -390,6 +490,8 @@ Invoke-RestMethod `
 | 扩展到服务端 | `capture_result` | 返回上下文或错误 |
 | 服务端到扩展 | `execute_script` | 请求执行 JavaScript |
 | 扩展到服务端 | `execute_result` | 返回执行结果或错误 |
+| 服务端到扩展 | `click_element` | 请求用虚拟光标点击元素 |
+| 扩展到服务端 | `click_result` | 返回点击结果或错误 |
 
 WebSocket 单条消息上限为 50 MB。
 
@@ -398,7 +500,7 @@ WebSocket 单条消息上限为 50 MB。
 | 权限 | 用途 |
 |---|---|
 | `tabs` | 定位当前聚焦窗口的活动标签页，并判断是否为 HTTP/HTTPS 页面 |
-| `debugger` | 附加活动标签页并调用 CDP `Runtime.evaluate` |
+| `debugger` | 附加活动标签页并调用 CDP `Runtime.evaluate` 执行代码，或用 `Input.dispatchMouseEvent` 派发真实点击 |
 | `host_permissions` | 允许扩展后台访问 `127.0.0.1:8090` 和 `localhost:8090` |
 | HTTP/HTTPS 内容脚本匹配 | 注入聊天 UI、采集当前页面 DOM 和上下文 |
 
@@ -410,6 +512,7 @@ WebSocket 单条消息上限为 50 MB。
 - 带 `Origin` 的请求只接受 `chrome-extension://` 来源；普通网页来源返回 `403 origin_forbidden`。
 - 无 `Origin` 的本地命令行和本地程序可以访问接口，因此回环地址限制不是进程级身份认证。
 - `/execute` 默认关闭，必须显式使用启动参数。
+- `/click` 默认关闭，必须显式使用 `--allow-interaction`；它会以真实鼠标事件点击任意由选择器命中的元素，可能触发提交、删除或支付等不可逆操作。
 - 页面 HTML 不截断，发送前应确认页面是否含敏感信息。
 - HTTP 请求体和 WebSocket 单条消息上限均为 50 MB。
 - 页面上下文和聊天历史不持久化到数据库，但占位聊天实现会将上下文打印到服务端控制台。
@@ -432,6 +535,8 @@ python -m unittest server.test_server -v
 - 扩展未连接时返回 `503`。
 - `/execute` 默认关闭。
 - 启用后 `/execute` WebSocket 往返和结果返回。
+- `/click` 默认关闭。
+- 启用后 `/click` WebSocket 往返、结果返回和扩展失败回传。
 
 ### 页面采集集成测试
 
@@ -477,6 +582,24 @@ conda run --no-capture-output -n agent python .\server\test_execute_api.py
 --message TEXT    自定义弹窗文本
 ```
 
+### 虚拟光标点击集成测试
+
+先以 `--allow-interaction` 启动服务，并确保扩展 1.3.0 已重新加载，且目标 HTTP/HTTPS 页面处于活动状态：
+
+```powershell
+conda run --no-capture-output -n agent python .\server\test_click_api.py --selector "#some-button"
+```
+
+脚本调用 `/click`，校验 `requestId` 以及 `result.x` / `result.y` 为数值，并输出命中元素的 `selector`、坐标、`tag` 和 `text`。
+
+可选参数：
+
+```text
+--endpoint URL    自定义接口地址
+--selector CSS    要点击元素的 CSS 选择器，默认 a[href]
+--timeout SEC     HTTP 超时，默认 20 秒
+```
+
 ## 停止服务
 
 在服务运行的终端按 `Ctrl+C`。也可以在 PowerShell 中按监听端口停止：
@@ -509,6 +632,21 @@ Stop-Process -Id $connection.OwningProcess
 python .\server\server.py --allow-js-execution
 ```
 
+### `/click` 返回 `403 interaction_disabled`
+
+使用以下命令重启服务：
+
+```powershell
+python .\server\server.py --allow-interaction
+```
+
+### `/click` 返回 `422 click_failed`
+
+- 确认选择器能命中元素，且元素位于可视区域内（扩展会自动滚动到元素中央）。
+- 确认当前活动页是 HTTP/HTTPS 页面，且扩展已获得 `debugger` 权限。
+- 如果 Chrome DevTools 已附加到同一标签页，点击可能失败，关闭后重试。
+- 确认页面已刷新，加载的是包含虚拟光标的 1.3.0 内容脚本。
+
 ### `/execute` 返回 `422 execution_failed`
 
 - 确认当前活动页是 HTTP/HTTPS 页面。
@@ -534,6 +672,8 @@ Get-NetTCPConnection -LocalPort 8090 -State Listen
 ## 当前限制
 
 - `/chat` 仅返回占位回答，尚未接入 LLM 或业务服务。
+- 虚拟光标会常驻显示在所有注入页面中，目前未提供开关，也不支持手动拖动。
+- `/click` 仅支持 CSS 选择器定位，每次只点击一个元素，未实现双击、右键或拖拽。
 - 服务地址、端口和扩展端点目前为固定值。
 - 页面采集和 JavaScript 执行固定作用于当前聚焦窗口的活动标签页。
 - 多个扩展实例连接时使用最后建立的存活连接，未提供客户端选择参数。

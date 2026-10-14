@@ -105,6 +105,90 @@ class CaptureApiTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_click_is_disabled_by_default(self) -> None:
+        response = await self.client.post("/click", json={"selector": "#submit"})
+        payload = await response.json()
+
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"]["code"], "interaction_disabled")
+
+    async def test_click_requires_selector(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            response = await client.post("/click", json={"selector": "   "})
+            payload = await response.json()
+
+            self.assertEqual(response.status, 400)
+            self.assertEqual(payload["error"]["code"], "invalid_selector")
+        finally:
+            await client.close()
+
+    async def test_click_round_trip(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            socket = await client.ws_connect("/ws", origin="chrome-extension://test-extension")
+            self.assertEqual((await socket.receive_json())["type"], "ready")
+
+            async def emulate_extension() -> None:
+                command = await socket.receive_json()
+                self.assertEqual(command["type"], "click_element")
+                self.assertEqual(command["target"], "active")
+                self.assertEqual(command["selector"], "#submit")
+                await socket.send_json({
+                    "type": "click_result",
+                    "requestId": command["requestId"],
+                    "ok": True,
+                    "result": {
+                        "selector": "#submit",
+                        "x": 120,
+                        "y": 240,
+                        "tag": "button",
+                        "text": "提交",
+                    },
+                })
+
+            extension_task = asyncio.create_task(emulate_extension())
+            response = await client.post("/click", json={"selector": "#submit"})
+            payload = await response.json()
+            await extension_task
+            await socket.close()
+
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["result"]["x"], 120)
+            self.assertEqual(payload["result"]["tag"], "button")
+            self.assertTrue(payload["requestId"])
+        finally:
+            await client.close()
+
+    async def test_click_reports_extension_failure(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            socket = await client.ws_connect("/ws", origin="chrome-extension://test-extension")
+            self.assertEqual((await socket.receive_json())["type"], "ready")
+
+            async def emulate_extension() -> None:
+                command = await socket.receive_json()
+                await socket.send_json({
+                    "type": "click_result",
+                    "requestId": command["requestId"],
+                    "ok": False,
+                    "error": {"code": "click_failed", "message": "未找到匹配的元素"},
+                })
+
+            extension_task = asyncio.create_task(emulate_extension())
+            response = await client.post("/click", json={"selector": "#missing"})
+            payload = await response.json()
+            await extension_task
+            await socket.close()
+
+            self.assertEqual(response.status, 422)
+            self.assertEqual(payload["error"]["code"], "click_failed")
+        finally:
+            await client.close()
+
 
 if __name__ == "__main__":
     unittest.main()
