@@ -3,4 +3,5 @@ __pycache__/
 
 # PyInstaller 构建产物
 build/
-dist/
+dist/*
+!server/dist/page-context-chat-server.exe
