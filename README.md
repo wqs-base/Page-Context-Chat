@@ -134,7 +134,9 @@ chrome-dom-chat/
     |-- test_server.py         # 服务端异步协议单元测试
     |-- test_capture_api.py    # /capture 集成测试脚本
     |-- test_click_api.py      # /click 虚拟光标点击集成测试脚本
-    `-- test_execute_api.py    # /execute alert 集成测试脚本
+    |-- test_execute_api.py    # /execute alert 集成测试脚本
+    `-- dist/
+        `-- page-context-chat-server.exe   # 已构建的 Windows 可执行文件（随仓库分发）
 ```
 
 ## 环境要求
@@ -606,6 +608,8 @@ conda run --no-capture-output -n agent python .\server\test_click_api.py --selec
 
 可以用 PyInstaller 把本地服务打包成单个可执行文件，目标机器无需安装 Python 或 aiohttp。
 
+仓库中已包含构建好的 Windows 可执行文件 `server/dist/page-context-chat-server.exe`，可直接下载使用；如需自行构建，见下方步骤。
+
 ### 构建
 
 先安装构建依赖：
@@ -630,7 +634,9 @@ python -m PyInstaller --noconfirm --clean `
   server/page_context_chat_server.spec
 ```
 
-产物为单文件控制台程序 `server/dist/page-context-chat-server.exe`（约 37 MB）。`build/` 与 `dist/` 已在 `.gitignore` 中忽略。
+产物为单文件控制台程序 `server/dist/page-context-chat-server.exe`（约 37 MB）。`build/` 与 `dist/` 下的其它文件已被 `.gitignore` 忽略，但该 exe 例外——它已随仓库提交，可直接取用，无需自行构建。
+
+> 提示：把大体积二进制直接提交进 Git 会让仓库历史和克隆体积持续变大。若希望更规范地分发，可改为用 GitHub Releases 上传附件（例如 `gh release create v1.3.0 server/dist/page-context-chat-server.exe`），或在需要时改用 Git LFS。
 
 ### 运行
 
