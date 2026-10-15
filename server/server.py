@@ -18,7 +18,13 @@ MAX_BODY_BYTES = 50 * 1024 * 1024
 CAPTURE_TIMEOUT_SECONDS = 15
 EXECUTE_TIMEOUT_SECONDS = 15
 CLICK_TIMEOUT_SECONDS = 15
+TYPE_TIMEOUT_SECONDS = 15
+MAX_TYPE_TIMEOUT_SECONDS = 90
 MAX_SCRIPT_BYTES = 256 * 1024
+MAX_TYPE_CHARS = 1000
+DEFAULT_TYPE_DELAY_MS = 30
+MAX_TYPE_DELAY_MS = 1000
+MAX_TYPE_DURATION_MS = 60 * 1000
 
 
 def json_error(status: int, code: str, message: str) -> web.Response:
@@ -51,6 +57,12 @@ class CaptureBroker:
 
     async def request_click(self, selector: str) -> tuple[str, dict[str, Any]]:
         return await self._request("click_element", {"selector": selector}, CLICK_TIMEOUT_SECONDS)
+
+    async def request_typing(self, command: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        # 逐字输入的耗时随文本长度和每字延迟线性增长，超时要跟着放大。
+        duration_ms = len(command["text"]) * int(command["delayMs"])
+        timeout = min(TYPE_TIMEOUT_SECONDS + duration_ms / 1000, MAX_TYPE_TIMEOUT_SECONDS)
+        return await self._request("type_text", command, timeout)
 
     async def _request(
         self,
@@ -230,6 +242,76 @@ async def click_element(request: web.Request) -> web.Response:
     return web.json_response({"requestId": request_id, "result": click_result})
 
 
+async def type_text(request: web.Request) -> web.Response:
+    if not request.app[INTERACTION_KEY]:
+        return json_error(403, "interaction_disabled", "服务启动时未启用页面交互控制")
+    try:
+        payload = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return json_error(400, "invalid_json", "请求体必须是有效的 UTF-8 JSON")
+    if not isinstance(payload, dict):
+        return json_error(400, "invalid_body", "请求体必须是 JSON 对象")
+
+    clear = payload.get("clear", False)
+    submit = payload.get("submit", False)
+    if not isinstance(clear, bool) or not isinstance(submit, bool):
+        return json_error(400, "invalid_flags", "clear 与 submit 必须是布尔值")
+
+    text = payload.get("text")
+    if not isinstance(text, str):
+        return json_error(400, "invalid_text", "text 必须是字符串")
+    if not text and not clear:
+        return json_error(400, "invalid_text", "text 不能为空字符串（除非同时把 clear 设为 true）")
+    if len(text) > MAX_TYPE_CHARS:
+        return json_error(413, "text_too_long", f"text 不能超过 {MAX_TYPE_CHARS} 个字符")
+
+    selector = payload.get("selector")
+    if selector is not None and (not isinstance(selector, str) or not selector.strip()):
+        return json_error(400, "invalid_selector", "selector 必须是非空字符串，或省略以输入到当前焦点元素")
+
+    delay_ms = payload.get("delayMs", DEFAULT_TYPE_DELAY_MS)
+    if isinstance(delay_ms, bool) or not isinstance(delay_ms, (int, float)):
+        return json_error(400, "invalid_delay", "delayMs 必须是数字")
+    delay_ms = int(delay_ms)
+    if not 0 <= delay_ms <= MAX_TYPE_DELAY_MS:
+        return json_error(400, "invalid_delay", f"delayMs 必须在 0 到 {MAX_TYPE_DELAY_MS} 之间")
+    if len(text) * delay_ms > MAX_TYPE_DURATION_MS:
+        return json_error(
+            400,
+            "typing_too_slow",
+            f"text 与 delayMs 组合的预计输入时间不能超过 {MAX_TYPE_DURATION_MS // 1000} 秒",
+        )
+
+    command: dict[str, Any] = {
+        "text": text,
+        "delayMs": delay_ms,
+        "clear": clear,
+        "submit": submit,
+    }
+    if isinstance(selector, str):
+        command["selector"] = selector.strip()
+
+    broker = request.app[BROKER_KEY]
+    try:
+        request_id, result = await broker.request_typing(command)
+    except ConnectionError as error:
+        return json_error(503, "extension_unavailable", str(error))
+    except TimeoutError:
+        return json_error(504, "type_timeout", "等待扩展完成输入超时")
+
+    if not result.get("ok"):
+        error = result.get("error") if isinstance(result.get("error"), dict) else {}
+        return json_error(
+            422,
+            str(error.get("code") or "type_failed"),
+            str(error.get("message") or "扩展无法在目标元素中输入文本"),
+        )
+    typing_result = result.get("result")
+    if not isinstance(typing_result, dict):
+        return json_error(502, "invalid_extension_response", "扩展响应缺少 result 对象")
+    return web.json_response({"requestId": request_id, "result": typing_result})
+
+
 async def extension_socket(request: web.Request) -> web.WebSocketResponse:
     socket = web.WebSocketResponse(heartbeat=25, max_msg_size=MAX_BODY_BYTES)
     await socket.prepare(request)
@@ -248,7 +330,7 @@ async def extension_socket(request: web.Request) -> web.WebSocketResponse:
                 continue
             if not isinstance(payload, dict):
                 continue
-            if payload.get("type") in {"capture_result", "execute_result", "click_result"}:
+            if payload.get("type") in {"capture_result", "execute_result", "click_result", "type_result"}:
                 broker.resolve(payload)
             elif payload.get("type") == "ping":
                 await socket.send_json({"type": "pong"})
@@ -293,6 +375,7 @@ def create_app(*, allow_js_execution: bool = False, allow_interaction: bool = Fa
         web.post("/capture", capture),
         web.post("/execute", execute_script),
         web.post("/click", click_element),
+        web.post("/type", type_text),
         web.get("/ws", extension_socket),
         web.options("/{path:.*}", health),
     ])
@@ -310,14 +393,14 @@ def main() -> None:
     parser.add_argument(
         "--allow-interaction",
         action="store_true",
-        help="enable the high-risk POST /click virtual-cursor endpoint",
+        help="enable the high-risk POST /click and POST /type endpoints",
     )
     args = parser.parse_args()
     print(f"Page Context Chat server listening on http://{HOST}:{PORT}")
     if args.allow_js_execution:
         print("WARNING: arbitrary JavaScript execution is enabled for the active browser tab")
     if args.allow_interaction:
-        print("WARNING: virtual-cursor clicking is enabled for the active browser tab")
+        print("WARNING: virtual-cursor clicking and simulated typing are enabled for the active browser tab")
     web.run_app(
         create_app(
             allow_js_execution=args.allow_js_execution,

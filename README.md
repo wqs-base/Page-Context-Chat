@@ -79,6 +79,15 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 - 注入的聊天组件和虚拟光标会在 DOM 被替换后自动重新挂载，兼容 GitHub 等采用 Turbo/SPA 软导航的页面。
 - 仅允许当前活动的 HTTP/HTTPS 标签页；单次点击等待上限为 15 秒。
 
+### 模拟输入
+
+- `/type` 属于页面交互能力，和 `/click` 一样默认关闭，使用 `--allow-interaction` 启动时开放。
+- 传 `selector`（CSS 或 `text=` / `text*=`）时，扩展先把目标滚动到可视区域中央、让虚拟光标移过去并聚焦该元素；省略 `selector` 时直接输入到当前焦点元素。
+- 逐字符通过 CDP `Input.dispatchKeyEvent` 派发 `keyDown` / `keyUp`，英文字母、数字、空格、回车、Tab 都带正确的 `code` 和虚拟键码；没有按键定义的字符（中文、表情、生僻符号）改用 `Input.insertText` 插入。
+- 走的是真实按键事件而不是脚本改写 `value`，所以受控组件（React/Vue）的 `onChange`、`input` 事件和依赖 `keydown` 的快捷键逻辑都能被正常触发。
+- 可选 `clear` 在输入前清空目标元素（用原生 value setter + `input` 事件，兼容受控组件），可选 `submit` 在输入完成后按一次回车。
+- 可选 `delayMs` 控制逐字延迟（默认 30 毫秒，模拟真实打字节奏）；`text` 与 `delayMs` 组合的预计耗时上限为 60 秒。
+
 ## 系统架构
 
 ```mermaid
@@ -113,6 +122,13 @@ flowchart LR
     UI -->|cursor moves to target / x,y| SW
     SW -->|CDP Input.dispatchMouseEvent| PAGE
     SW -->|click_result| API
+
+    U -->|POST /type| API
+    API -->|type_text / WebSocket| SW
+    SW -->|FOCUS_FOR_TYPING| UI
+    UI -->|focused target / editable| SW
+    SW -->|CDP Input.dispatchKeyEvent| PAGE
+    SW -->|type_result| API
 ```
 
 服务端使用 `requestId` 关联并发命令和异步 WebSocket 回包。存在多个扩展连接时，当前实现选择最后建立且仍然存活的连接。
@@ -146,6 +162,7 @@ chrome-dom-chat/
     |-- test_server.py         # 服务端异步协议单元测试
     |-- test_capture_api.py    # /capture 集成测试脚本
     |-- test_click_api.py      # /click 虚拟光标点击集成测试脚本
+    |-- test_type_api.py       # /type 模拟输入集成测试脚本
     `-- test_execute_api.py    # /execute alert 集成测试脚本
 ```
 
@@ -197,14 +214,14 @@ python .\server\server.py --allow-js-execution
 
 ### 4. 启动页面交互模式
 
-虚拟光标点击同样默认关闭，需要显式启用；两个高风险参数可以同时使用：
+虚拟光标点击和模拟输入同样默认关闭，需要显式启用；两个高风险参数可以同时使用：
 
 ```powershell
 python .\server\server.py --allow-interaction
 python .\server\server.py --allow-js-execution --allow-interaction
 ```
 
-未提供 `--allow-interaction` 时，`POST /click` 返回 `403 interaction_disabled`。
+未提供 `--allow-interaction` 时，`POST /click` 和 `POST /type` 都返回 `403 interaction_disabled`。
 
 ### 5. 加载 Chrome Extension
 
@@ -232,6 +249,7 @@ python .\server\server.py --allow-js-execution --allow-interaction
 | `POST` | `/capture` | 主动采集当前活动页 | 是 |
 | `POST` | `/execute` | 在当前活动页执行 JavaScript | 否，需要启动参数 |
 | `POST` | `/click` | 用虚拟光标移动并点击当前活动页元素 | 否，需要启动参数 |
+| `POST` | `/type` | 向当前活动页的目标元素模拟键盘输入 | 否，需要启动参数 |
 | `GET` | `/ws` | 扩展与服务端内部 WebSocket 通道 | 是 |
 
 服务端只绑定回环地址，不接受其他机器连接。
@@ -492,6 +510,100 @@ Invoke-RestMethod `
 
 虚拟光标由内容脚本提供并常驻显示，点击本身通过 CDP 在页面主世界派发真实鼠标事件，因此目标页面能收到 `isTrusted` 为 `true` 的点击。
 
+### `POST /type`
+
+必须使用 `--allow-interaction` 启动服务。请求让扩展把文本逐字符输入到目标元素，用于模拟真人打字。
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `text` | string | 是 | 要输入的文本，最多 1000 个字符；只想清空时可传空串并把 `clear` 设为 `true` |
+| `selector` | string | 否 | 目标元素，支持 CSS 选择器或 `text=` / `text*=` 文本选择器；省略时输入到当前焦点元素 |
+| `clear` | boolean | 否 | 输入前先清空目标元素，默认 `false` |
+| `submit` | boolean | 否 | 输入完成后按一次回车，默认 `false` |
+| `delayMs` | number | 否 | 每个字符之间的延迟毫秒数，取值 0–1000，默认 30 |
+
+```http
+POST http://127.0.0.1:8090/type
+Content-Type: application/json
+```
+
+请求：
+
+```json
+{
+  "selector": "#search-input",
+  "text": "gitee",
+  "clear": true,
+  "submit": true,
+  "delayMs": 30
+}
+```
+
+只清空输入框：
+
+```json
+{
+  "selector": "#search-input",
+  "text": "",
+  "clear": true
+}
+```
+
+PowerShell 示例：
+
+```powershell
+$body = @{
+  selector = "#search-input"
+  text     = "gitee"
+  clear    = $true
+  submit   = $true
+} | ConvertTo-Json
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://127.0.0.1:8090/type" `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+成功响应：
+
+```json
+{
+  "requestId": "7c1d2b4a9f0e43d1be56a7c8d9e0f123",
+  "result": {
+    "selector": "#search-input",
+    "text": "gitee",
+    "length": 5,
+    "delayMs": 30,
+    "cleared": true,
+    "submitted": true,
+    "tag": "input",
+    "editable": true
+  }
+}
+```
+
+`result.cleared` 表示是否真的执行过清空，`result.editable` 是目标元素可输入性的判定结果；省略 `selector` 时 `result.tag` 为空串、`result.editable` 为 `null`。
+
+可能的错误：
+
+- `400 invalid_json`
+- `400 invalid_body`
+- `400 invalid_text`：`text` 不是字符串，或在没有同时指定 `clear` 的情况下传了空串。
+- `400 invalid_selector`
+- `400 invalid_flags`：`clear` / `submit` 不是布尔值。
+- `400 invalid_delay`：`delayMs` 不是数字或超出 0–1000。
+- `400 typing_too_slow`：`text` 与 `delayMs` 组合的预计输入时间超过 60 秒。
+- `403 interaction_disabled`
+- `403 origin_forbidden`
+- `413 text_too_long`：`text` 超过 1000 个字符。
+- `422 type_failed`：选择器无效、未找到元素、元素不可输入、页面不支持或调试器被占用等。
+- `502 invalid_extension_response`
+- `503 extension_unavailable`
+- `504 type_timeout`
+
+输入本身通过 CDP 派发真实按键事件，和手动敲键盘一样会触发页面的 `keydown` / `keypress` / `input` 链路；`clear` 走脚本清空，只影响目标元素的值。
+
 ### `GET /ws`
 
 该接口供扩展内部使用，不是普通业务调用接口。主要消息类型：
@@ -508,6 +620,8 @@ Invoke-RestMethod `
 | 扩展到服务端 | `execute_result` | 返回执行结果或错误 |
 | 服务端到扩展 | `click_element` | 请求用虚拟光标点击元素 |
 | 扩展到服务端 | `click_result` | 返回点击结果或错误 |
+| 服务端到扩展 | `type_text` | 请求向目标元素模拟键盘输入 |
+| 扩展到服务端 | `type_result` | 返回输入结果或错误 |
 
 WebSocket 单条消息上限为 50 MB。
 
@@ -516,7 +630,7 @@ WebSocket 单条消息上限为 50 MB。
 | 权限 | 用途 |
 |---|---|
 | `tabs` | 定位当前聚焦窗口的活动标签页，并判断是否为 HTTP/HTTPS 页面 |
-| `debugger` | 附加活动标签页并调用 CDP `Runtime.evaluate` 执行代码，或用 `Input.dispatchMouseEvent` 派发真实点击 |
+| `debugger` | 附加活动标签页并调用 CDP `Runtime.evaluate` 执行代码，或用 `Input.dispatchMouseEvent` 派发真实点击、用 `Input.dispatchKeyEvent` 模拟键盘输入 |
 | `scripting` | 在扩展重载后向已打开的页面重新注入内容脚本，省去手动刷新 |
 | `host_permissions` | 允许扩展后台访问 `127.0.0.1:8090` 和 `localhost:8090`，并对 HTTP/HTTPS 页面拥有注入权限（供 `scripting` 使用） |
 | HTTP/HTTPS 内容脚本匹配 | 注入聊天 UI、采集当前页面 DOM 和上下文 |
@@ -530,6 +644,7 @@ WebSocket 单条消息上限为 50 MB。
 - 无 `Origin` 的本地命令行和本地程序可以访问接口，因此回环地址限制不是进程级身份认证。
 - `/execute` 默认关闭，必须显式使用启动参数。
 - `/click` 默认关闭，必须显式使用 `--allow-interaction`；它会以真实鼠标事件点击任意由选择器命中的元素，可能触发提交、删除或支付等不可逆操作。
+- `/type` 同样默认关闭，必须显式使用 `--allow-interaction`；它会向任意由选择器命中的元素输入文本，配合 `submit` 可以触发搜索、提交等操作。
 - 页面 HTML 不截断，发送前应确认页面是否含敏感信息。
 - HTTP 请求体和 WebSocket 单条消息上限均为 50 MB。
 - 页面上下文和聊天历史不持久化到数据库，但占位聊天实现会将上下文打印到服务端控制台。
@@ -554,6 +669,8 @@ python -m unittest server.test_server -v
 - 启用后 `/execute` WebSocket 往返和结果返回。
 - `/click` 默认关闭。
 - 启用后 `/click` WebSocket 往返、结果返回和扩展失败回传。
+- `/type` 默认关闭。
+- 启用后 `/type` WebSocket 往返、参数校验（空文本、选择器、`delayMs` 范围与总耗时）和扩展失败回传。
 
 ### 页面采集集成测试
 
@@ -617,6 +734,28 @@ conda run --no-capture-output -n agent python .\server\test_click_api.py --selec
 --timeout SEC     HTTP 超时，默认 20 秒
 ```
 
+### 模拟输入集成测试
+
+先以 `--allow-interaction` 启动服务，并确保扩展 1.5.0 已重新加载，且目标 HTTP/HTTPS 页面中有一个可见输入框：
+
+```powershell
+conda run --no-capture-output -n agent python .\server\test_type_api.py --selector "#search-input" --text "gitee" --clear --submit
+```
+
+脚本调用 `/type`，校验 `requestId` 以及 `result.length` 与输入文本长度一致，并输出命中元素的 `tag`、`cleared`、`submitted` 和 `editable`。
+
+可选参数：
+
+```text
+--endpoint URL    自定义接口地址
+--selector CSS    目标输入元素的 CSS 选择器，默认 input；传空字符串表示输入到当前焦点元素
+--text TEXT       要输入的文本，默认 page context chat
+--delay-ms MS     每个字符之间的延迟毫秒数，默认 30
+--clear           输入前先清空目标元素
+--submit          输入完成后按一次回车
+--timeout SEC     HTTP 超时，默认 30 秒
+```
+
 ## 打包与分发
 
 仓库中已包含打包好的分发产物，随仓库一起提交，开箱即用：
@@ -663,13 +802,13 @@ python -m PyInstaller --noconfirm --clean `
 | 模式 | 命令 | 额外开放的接口 |
 |---|---|---|
 | 普通模式（默认） | `.\skills\page-context-chat\scripts\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
-| 页面交互模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-interaction` | `/click` |
+| 页面交互模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-interaction` | `/click` + `/type` |
 | JavaScript 执行模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution` | `/execute` |
-| 完整模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/execute` |
+| 完整模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/type` + `/execute` |
 
 说明：
 
-- `--allow-interaction` 启用虚拟光标点击 `/click`，`--allow-js-execution` 启用任意 JavaScript 执行 `/execute`；两者默认关闭，可独立或同时使用，未启用时分别返回 `403 interaction_disabled` 和 `403 js_execution_disabled`。
+- `--allow-interaction` 启用虚拟光标点击 `/click` 和模拟输入 `/type`，`--allow-js-execution` 启用任意 JavaScript 执行 `/execute`；两者默认关闭，可独立或同时使用，未启用时分别返回 `403 interaction_disabled` 和 `403 js_execution_disabled`。
 - 直接双击 exe 等同于无参数启动普通模式。程序带控制台窗口运行，启动时会打印监听地址，启用高风险参数时会额外打印警告。
 - 监听地址固定为 `http://127.0.0.1:8090`，接口路由与行为同源码方式一致，分发时只需拷贝该 exe。
 - 停止服务：在运行窗口按 `Ctrl+C`。需要后台运行时可用 `Start-Process`，按端口停止的方法见「停止服务」一节。
@@ -738,6 +877,27 @@ python .\server\server.py --allow-js-execution
 python .\server\server.py --allow-interaction
 ```
 
+### `/type` 返回 `403 interaction_disabled`
+
+和 `/click` 共用同一个启动参数：
+
+```powershell
+python .\server\server.py --allow-interaction
+```
+
+### `/type` 返回 `422 type_failed`
+
+- 传了 `selector` 时，确认它能命中元素、元素位于可视区域内，且是可输入的元素（`input` / `textarea` / `contenteditable` / `role=textbox` 等）。
+- 想输入到页面上已经聚焦的元素时，省略 `selector` 即可跳过元素定位与可输入性检查。
+- 确认当前活动页是 HTTP/HTTPS 页面，且扩展已获得 `debugger` 权限。
+- 如果 Chrome DevTools 已附加到同一标签页，输入可能失败，关闭后重试。
+
+### `/type` 输入的文本没生效
+
+- 检查响应里的 `result.editable`：为 `false` 说明命中的元素不可输入，按键事件不会产生文本。
+- 输入完成后页面可能需要一点时间响应，尤其是 `submit` 触发的搜索或表单提交，建议稍等再 `/capture` 核对。
+- 组合键（`Ctrl+A`、`Shift+方向键`）和多行粘贴目前不支持，`text` 中的换行会按一次回车键处理。
+
 ### `/click` 返回 `422 click_failed`
 
 - 确认选择器能命中元素，且元素位于可视区域内（扩展会自动滚动到元素中央）。
@@ -771,7 +931,9 @@ Get-NetTCPConnection -LocalPort 8090 -State Listen
 
 - `/chat` 仅返回占位回答，尚未接入 LLM 或业务服务。
 - 虚拟光标会常驻显示在所有注入页面中，目前未提供开关，也不支持手动拖动。
-- `/click` 仅支持 CSS 选择器定位，每次只点击一个元素，未实现双击、右键或拖拽。
+- `/click` 每次只操作一个元素，未实现双击、右键或拖拽。
+- `/type` 逐字符输入，不支持组合键（`Ctrl+C`、`Shift+方向键` 等）、粘贴、撤销和输入法候选词选字；`clear` 通过脚本清空元素值，不会触发页面的删除键逻辑；`text` 中的换行按一次回车键处理。
+- 页面交互（`/click`、`/type`）固定作用于当前聚焦窗口的活动标签页。
 - 服务地址、端口和扩展端点目前为固定值。
 - 页面采集和 JavaScript 执行固定作用于当前聚焦窗口的活动标签页。
 - 多个扩展实例连接时使用最后建立的存活连接，未提供客户端选择参数。

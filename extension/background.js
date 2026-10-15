@@ -36,7 +36,7 @@ function connectSocket() {
   socket = new WebSocket(SOCKET_ENDPOINT);
   socket.addEventListener("open", () => {
     reconnectDelay = 1000;
-    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.4.0" });
+    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.5.0" });
     clearInterval(keepaliveTimer);
     keepaliveTimer = setInterval(() => sendSocketMessage({ type: "ping" }), KEEPALIVE_INTERVAL_MS);
   });
@@ -53,6 +53,8 @@ function connectSocket() {
       await executeInActivePage(message.requestId, message.code);
     } else if (message?.type === "click_element" && typeof message.requestId === "string") {
       await clickInActivePage(message.requestId, message.selector);
+    } else if (message?.type === "type_text" && typeof message.requestId === "string") {
+      await typeInActivePage(message.requestId, message);
     }
   });
   socket.addEventListener("close", () => {
@@ -206,6 +208,134 @@ async function clickInActivePage(requestId, selector) {
       error: {
         code: "click_failed",
         message: `无法在活动页面点击目标元素：${error.message}`
+      }
+    });
+  } finally {
+    if (debuggee) {
+      await chrome.debugger.detach(debuggee).catch(() => {});
+    }
+  }
+}
+
+// --- 模拟输入（POST /type）--------------------------------------------------
+// 通过 CDP 派发真实的按键事件，而不是直接改写 input.value，这样页面的事件处理、
+// 受控组件（React/Vue）和快捷键逻辑都能被正常触发。
+function describeTypingKey(char) {
+  if (char === "\n" || char === "\r") {
+    return { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" };
+  }
+  if (char === "\t") {
+    return { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 };
+  }
+  if (char === " ") {
+    return { key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " };
+  }
+  if (/^[a-z]$/i.test(char)) {
+    const upper = char.toUpperCase();
+    return { key: char, code: `Key${upper}`, windowsVirtualKeyCode: upper.charCodeAt(0), text: char };
+  }
+  if (/^[0-9]$/.test(char)) {
+    return { key: char, code: `Digit${char}`, windowsVirtualKeyCode: char.charCodeAt(0), text: char };
+  }
+  return null;
+}
+
+async function pressKey(debuggee, definition) {
+  const base = {
+    key: definition.key,
+    code: definition.code,
+    windowsVirtualKeyCode: definition.windowsVirtualKeyCode,
+    nativeVirtualKeyCode: definition.windowsVirtualKeyCode
+  };
+  await chrome.debugger.sendCommand(debuggee, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    ...base,
+    text: definition.text || "",
+    unmodifiedText: definition.text || ""
+  });
+  await chrome.debugger.sendCommand(debuggee, "Input.dispatchKeyEvent", { type: "keyUp", ...base });
+}
+
+async function typeTextIntoPage(debuggee, text, delayMs) {
+  for (const char of Array.from(text)) {
+    const definition = describeTypingKey(char);
+    if (definition) {
+      await pressKey(debuggee, definition);
+    } else {
+      // 没有对应按键定义的字符（中文、表情、生僻符号等）直接交给 CDP 插入文本。
+      await chrome.debugger.sendCommand(debuggee, "Input.insertText", { text: char });
+    }
+    if (delayMs > 0) {
+      await delay(delayMs);
+    }
+  }
+}
+
+async function typeInActivePage(requestId, message) {
+  let debuggee = null;
+  let tabId = null;
+  let target = null;
+  const text = typeof message.text === "string" ? message.text : "";
+  const selector = typeof message.selector === "string" ? message.selector.trim() : "";
+  const delayMs = Number.isFinite(message.delayMs) ? Math.max(0, Math.trunc(message.delayMs)) : 0;
+  const clear = Boolean(message.clear);
+  const submit = Boolean(message.submit);
+
+  try {
+    if (!text && !clear) {
+      throw new Error("服务端未提供要输入的文本");
+    }
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab?.id || !/^https?:\/\//.test(tab.url || "")) {
+      throw new Error("当前活动页不是可交互的 HTTP/HTTPS 页面");
+    }
+    tabId = tab.id;
+
+    if (selector) {
+      target = await chrome.tabs.sendMessage(tabId, { type: "FOCUS_FOR_TYPING", selector, clear });
+      if (!target?.ok) {
+        throw new Error(target?.error || "无法定位输入目标");
+      }
+    }
+
+    debuggee = { tabId };
+    await chrome.debugger.attach(debuggee, "1.3");
+
+    if (text) {
+      await typeTextIntoPage(debuggee, text, delayMs);
+    }
+    if (submit) {
+      await delay(30);
+      await pressKey(debuggee, { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+    }
+
+    chrome.tabs.sendMessage(tabId, { type: "TYPE_FEEDBACK", ok: true }).catch(() => {});
+    sendSocketMessage({
+      type: "type_result",
+      requestId,
+      ok: true,
+      result: {
+        selector,
+        text,
+        length: Array.from(text).length,
+        delayMs,
+        cleared: Boolean(target?.cleared),
+        submitted: submit,
+        tag: target?.tag || "",
+        editable: target ? Boolean(target.editable) : null
+      }
+    });
+  } catch (error) {
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, { type: "TYPE_FEEDBACK", ok: false }).catch(() => {});
+    }
+    sendSocketMessage({
+      type: "type_result",
+      requestId,
+      ok: false,
+      error: {
+        code: "type_failed",
+        message: `无法在活动页面输入文本：${error.message}`
       }
     });
   } finally {

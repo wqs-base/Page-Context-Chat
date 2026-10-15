@@ -191,7 +191,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.4.0" }
+      client: { name: "page-context-chat", version: "1.5.0" }
     };
 
     try {
@@ -380,12 +380,7 @@
     return element;
   }
 
-  async function moveVirtualCursorToSelector(selector) {
-    if (typeof selector !== "string" || !selector.trim()) {
-      throw new Error("选择器不能为空");
-    }
-    const element = resolveTargetElement(selector);
-
+  async function scrollAndPointTo(element) {
     const previousScrollBehavior = document.documentElement.style.scrollBehavior;
     document.documentElement.style.scrollBehavior = "auto";
     element.scrollIntoView({ block: "center", inline: "center" });
@@ -404,11 +399,82 @@
     const y = clamp(rect.top + rect.height / 2, 0, Math.max(window.innerHeight - 1, 0));
 
     await animateCursorTo(x, y);
+    return { x, y };
+  }
+
+  async function moveVirtualCursorToSelector(selector) {
+    if (typeof selector !== "string" || !selector.trim()) {
+      throw new Error("选择器不能为空");
+    }
+    const element = resolveTargetElement(selector);
+    const { x, y } = await scrollAndPointTo(element);
     return {
       x,
       y,
       tag: element.tagName.toLowerCase(),
       text: normalizeText(element.innerText || element.getAttribute("aria-label") || "", 120)
+    };
+  }
+
+  const EDITABLE_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton"]);
+
+  function isEditableElement(element) {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      return !element.disabled && !element.readOnly;
+    }
+    if (element.isContentEditable) {
+      return true;
+    }
+    return EDITABLE_ROLES.has(element.getAttribute("role") || "");
+  }
+
+  function clearEditableElement(element) {
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      // 用原型上的原生 setter 赋值，绕过 React/Vue 对 value 属性的劫持，
+      // 再补一个 input 事件，让受控组件同步到"已清空"。
+      const prototype = element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+      if (setter) {
+        setter.call(element, "");
+      } else {
+        element.value = "";
+      }
+    } else if (element.isContentEditable) {
+      element.textContent = "";
+    } else {
+      return false;
+    }
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+
+  async function focusElementForTyping(selector, clear) {
+    if (typeof selector !== "string" || !selector.trim()) {
+      throw new Error("选择器不能为空");
+    }
+    const element = resolveTargetElement(selector);
+    const { x, y } = await scrollAndPointTo(element);
+
+    if (typeof element.focus === "function") {
+      element.focus({ preventScroll: true });
+    }
+    const editable = isEditableElement(element);
+    if (!editable) {
+      throw new Error("目标元素不是可输入的元素（input/textarea/contenteditable）");
+    }
+
+    return {
+      x,
+      y,
+      tag: element.tagName.toLowerCase(),
+      text: normalizeText(
+        element.value || element.innerText || element.getAttribute("aria-label") || "",
+        120
+      ),
+      editable,
+      cleared: Boolean(clear) && clearEditableElement(element)
     };
   }
 
@@ -505,7 +571,13 @@
         .catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
     }
-    if (request?.type === "CLICK_FEEDBACK") {
+    if (request?.type === "FOCUS_FOR_TYPING") {
+      focusElementForTyping(request.selector, Boolean(request.clear))
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((error) => sendResponse({ ok: false, error: error.message }));
+      return true;
+    }
+    if (request?.type === "CLICK_FEEDBACK" || request?.type === "TYPE_FEEDBACK") {
       pulseCursor(Boolean(request.ok));
       return false;
     }

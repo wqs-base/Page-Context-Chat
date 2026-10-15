@@ -190,5 +190,164 @@ class CaptureApiTest(unittest.IsolatedAsyncioTestCase):
             await client.close()
 
 
+    async def test_type_is_disabled_by_default(self) -> None:
+        response = await self.client.post("/type", json={"text": "hello", "selector": "#q"})
+        payload = await response.json()
+
+        self.assertEqual(response.status, 403)
+        self.assertEqual(payload["error"]["code"], "interaction_disabled")
+
+    async def test_type_requires_text_unless_clearing(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            response = await client.post("/type", json={"text": "", "selector": "#q"})
+            payload = await response.json()
+            self.assertEqual(response.status, 400)
+            self.assertEqual(payload["error"]["code"], "invalid_text")
+
+            response = await client.post("/type", json={"text": "hello", "selector": "   "})
+            payload = await response.json()
+            self.assertEqual(response.status, 400)
+            self.assertEqual(payload["error"]["code"], "invalid_selector")
+
+            # 只清空、不输入文本是合法请求：校验通过后会因为没有扩展连接而返回 503。
+            response = await client.post("/type", json={"text": "", "clear": True})
+            payload = await response.json()
+            self.assertEqual(response.status, 503)
+            self.assertEqual(payload["error"]["code"], "extension_unavailable")
+        finally:
+            await client.close()
+
+    async def test_type_rejects_out_of_range_delay(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            response = await client.post("/type", json={"text": "hi", "delayMs": -1})
+            payload = await response.json()
+            self.assertEqual(response.status, 400)
+            self.assertEqual(payload["error"]["code"], "invalid_delay")
+
+            response = await client.post("/type", json={"text": "hi", "delayMs": "fast"})
+            payload = await response.json()
+            self.assertEqual(response.status, 400)
+            self.assertEqual(payload["error"]["code"], "invalid_delay")
+
+            response = await client.post("/type", json={"text": "x" * 100, "delayMs": 1000})
+            payload = await response.json()
+            self.assertEqual(response.status, 400)
+            self.assertEqual(payload["error"]["code"], "typing_too_slow")
+        finally:
+            await client.close()
+
+    async def test_type_round_trip(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            socket = await client.ws_connect("/ws", origin="chrome-extension://test-extension")
+            self.assertEqual((await socket.receive_json())["type"], "ready")
+
+            async def emulate_extension() -> None:
+                command = await socket.receive_json()
+                self.assertEqual(command["type"], "type_text")
+                self.assertEqual(command["target"], "active")
+                self.assertEqual(command["selector"], "#sb_form_q")
+                self.assertEqual(command["text"], "gitee")
+                self.assertEqual(command["delayMs"], 50)
+                self.assertTrue(command["clear"])
+                self.assertTrue(command["submit"])
+                await socket.send_json({
+                    "type": "type_result",
+                    "requestId": command["requestId"],
+                    "ok": True,
+                    "result": {
+                        "selector": "#sb_form_q",
+                        "text": "gitee",
+                        "length": 5,
+                        "delayMs": 50,
+                        "cleared": True,
+                        "submitted": True,
+                        "tag": "input",
+                        "editable": True,
+                    },
+                })
+
+            extension_task = asyncio.create_task(emulate_extension())
+            response = await client.post("/type", json={
+                "selector": "#sb_form_q",
+                "text": "gitee",
+                "clear": True,
+                "submit": True,
+                "delayMs": 50,
+            })
+            payload = await response.json()
+            await extension_task
+            await socket.close()
+
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["result"]["length"], 5)
+            self.assertTrue(payload["result"]["submitted"])
+            self.assertTrue(payload["requestId"])
+        finally:
+            await client.close()
+
+    async def test_type_defaults_delay_and_can_target_current_focus(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            socket = await client.ws_connect("/ws", origin="chrome-extension://test-extension")
+            self.assertEqual((await socket.receive_json())["type"], "ready")
+
+            async def emulate_extension() -> None:
+                command = await socket.receive_json()
+                self.assertEqual(command["type"], "type_text")
+                self.assertEqual(command["delayMs"], 30)
+                self.assertNotIn("selector", command)
+                await socket.send_json({
+                    "type": "type_result",
+                    "requestId": command["requestId"],
+                    "ok": True,
+                    "result": {"text": "hi", "length": 2, "editable": None},
+                })
+
+            extension_task = asyncio.create_task(emulate_extension())
+            response = await client.post("/type", json={"text": "hi"})
+            payload = await response.json()
+            await extension_task
+            await socket.close()
+
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["result"]["length"], 2)
+        finally:
+            await client.close()
+
+    async def test_type_reports_extension_failure(self) -> None:
+        client = TestClient(TestServer(create_app(allow_interaction=True)))
+        await client.start_server()
+        try:
+            socket = await client.ws_connect("/ws", origin="chrome-extension://test-extension")
+            self.assertEqual((await socket.receive_json())["type"], "ready")
+
+            async def emulate_extension() -> None:
+                command = await socket.receive_json()
+                await socket.send_json({
+                    "type": "type_result",
+                    "requestId": command["requestId"],
+                    "ok": False,
+                    "error": {"code": "type_failed", "message": "目标元素不是可输入的元素"},
+                })
+
+            extension_task = asyncio.create_task(emulate_extension())
+            response = await client.post("/type", json={"text": "hi", "selector": "#title"})
+            payload = await response.json()
+            await extension_task
+            await socket.close()
+
+            self.assertEqual(response.status, 422)
+            self.assertEqual(payload["error"]["code"], "type_failed")
+        finally:
+            await client.close()
+
+
 if __name__ == "__main__":
     unittest.main()
