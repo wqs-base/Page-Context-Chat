@@ -77,7 +77,7 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 - 扩展先让目标元素滚动到可视区域中央，再让虚拟光标平滑移动到元素中心，最后通过 CDP `Input.dispatchMouseEvent` 在坐标点派发 `mouseMoved`、`mousePressed`、`mouseReleased`，产生 `isTrusted` 的真实鼠标点击。
 - 点击成功用绿色圆环反馈，失败用红色圆环反馈。
 - 注入的聊天组件和虚拟光标会在 DOM 被替换后自动重新挂载，兼容 GitHub 等采用 Turbo/SPA 软导航的页面。
-- 聊天面板右下角有「跟随鼠标」开关：开启后虚拟光标会带一点右下偏移、以平滑拖尾的形式跟随真实指针。`/click`、`/type` 期间跟随会显式暂停（直到后台回传动作完成的反馈），所以动作结束后光标**停在目标上**，直到你再次移动鼠标才滑回指针旁边；跟随只在指针坐标**真的变化**时触发，滚动、搜索联想下拉等引起的合成 `mousemove`，以及视口 `resize`（含 Chrome 调试器横幅出现/收起）都不会把光标带走。开关状态用 `chrome.storage.local` 全局保存，所有页面共用。
+- 聊天面板右下角有「跟随鼠标」开关：开启后虚拟光标会带一点右下偏移、以平滑拖尾的形式跟随真实指针。`/click`、`/type` 期间跟随会显式暂停（直到后台回传动作完成的反馈），所以动作结束后光标**停在目标上**，直到你再次移动鼠标才滑回指针旁边。是否「用户真的在移动鼠标」以 `screenX` / `screenY` 判断：滚动、搜索联想下拉、以及视口变化（Chrome 调试器横幅出现/收起时会给静止指针重算 `clientX/clientY` 并补发 `mousemove`）都不会把光标带走。开关状态用 `chrome.storage.local` 全局保存，所有页面共用。
 - 虚拟光标当前位置会同步到 `#page-context-chat-cursor` 的 `data-x` / `data-y` 属性（CSS 像素、视口坐标），方便用 `/execute` 核对光标是否真的走到了目标。
 - 仅允许当前活动的 HTTP/HTTPS 标签页；单次点击等待上限为 15 秒。
 

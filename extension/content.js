@@ -199,7 +199,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.6.3" }
+      client: { name: "page-context-chat", version: "1.6.4" }
     };
 
     try {
@@ -359,6 +359,8 @@
   let followTarget = null;
   let pointerX = null;
   let pointerY = null;
+  let pointerScreenX = null;
+  let pointerScreenY = null;
   let followHeldUntil = 0;
 
   function isFollowHeld() {
@@ -427,14 +429,22 @@
     }
   }
 
-  // 记录指针位置，但只有在坐标真的变化时才认为“用户在移动鼠标”。
-  // 滚动、DOM 变化（例如输入框弹出的搜索联想下拉）触发的合成 mousemove 会带着
-  // 同一坐标重复上报，不能让它把光标从刚操作完的目标上拽走。
+  // 只有在“屏幕坐标”变化时才认为用户在移动鼠标。
+  // Chrome 会在视口/布局变化时为静止的指针重算 clientX/clientY 并补发 mousemove：
+  // 实测调试器横幅出现/收起时 clientY 会从 284 补间到 340（差 56，正好是横幅高度），
+  // 而 screenX/screenY 全程不变。这种事件不能把光标从刚操作完的目标上拽走。
   document.addEventListener("mousemove", (event) => {
-    const moved = event.clientX !== pointerX || event.clientY !== pointerY;
+    if (isFollowHeld()) {
+      // 动作期间连坐标都不记：否则 /click 经 CDP 派发的 mouseMoved 会把“指针位置”
+      // 改成目标点，等按住解除后，一次静止指针的布局重算就会被误判成用户移动。
+      return;
+    }
+    const movedByPointer = event.screenX !== pointerScreenX || event.screenY !== pointerScreenY;
+    pointerScreenX = event.screenX;
+    pointerScreenY = event.screenY;
     pointerX = event.clientX;
     pointerY = event.clientY;
-    if (!moved || isFollowHeld()) {
+    if (!movedByPointer) {
       return;
     }
     updateFollowTarget();
