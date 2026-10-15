@@ -1,7 +1,9 @@
 (() => {
-  if (document.getElementById("page-context-chat-root")) {
-    return;
-  }
+  // 扩展被重新加载/更新后，已打开页面里的旧内容脚本会失去 chrome.runtime 通道（孤儿脚本）。
+  // 后台会检测到并重新注入本脚本；此时旧 UI 节点还在，必须先清掉再重建，
+  // 否则新脚本会被下面的判断挡住直接退出，消息监听根本不会注册。
+  document.getElementById("page-context-chat-root")?.remove();
+  document.getElementById("page-context-chat-cursor")?.remove();
 
   const MAX_TEXT_LENGTH = 30000;
   const MAX_ELEMENTS = 80;
@@ -189,7 +191,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.3.0" }
+      client: { name: "page-context-chat", version: "1.4.0" }
     };
 
     try {
@@ -427,6 +429,14 @@
   });
 
   // --- DOM 自愈：SPA（如 GitHub Turbo）替换 DOM 后重新挂载注入节点 --------
+  function isExtensionAlive() {
+    try {
+      return Boolean(chrome.runtime && chrome.runtime.id);
+    } catch {
+      return false;
+    }
+  }
+
   function ensureOverlaysAttached() {
     const parent = document.documentElement || document.body;
     if (!parent) {
@@ -453,6 +463,14 @@
   }
 
   const overlayObserver = new MutationObserver(() => {
+    if (!isExtensionAlive()) {
+      // 本脚本已成孤儿（扩展被重载）：停止自愈并把自己的节点清掉，
+      // 让位给后台重新注入的新脚本，避免把失效的 UI 又挂回去。
+      overlayObserver.disconnect();
+      cursorHost.remove();
+      host.remove();
+      return;
+    }
     if (cursorHost.isConnected && host.isConnected) {
       return;
     }
@@ -465,6 +483,10 @@
   window.addEventListener("pageshow", ensureOverlaysAttached);
 
   chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
+    if (request?.type === "PING_PAGE_CONTEXT_CHAT") {
+      sendResponse({ ok: true });
+      return false;
+    }
     if (request?.type === "TOGGLE_PAGE_CONTEXT_CHAT") {
       setOpen(!panel.classList.contains("open"));
       return false;

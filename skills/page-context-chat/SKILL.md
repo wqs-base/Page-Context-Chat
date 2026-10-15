@@ -31,7 +31,7 @@ description: 运行和试用 Page Context Chat 浏览器页面助手（本仓库
 
 1. **安装扩展**：解压 `release/page-context-chat-extension.zip`，或用源码目录 `extension/`。打开 `chrome://extensions/` → 开启「开发者模式」→「加载已解压的扩展程序」→ 选择解压出的目录（或 `extension` 目录）。
 2. **改过代码/MANIFEST 就必须重新加载**：在 `chrome://extensions/` 点该扩展的「重新加载」。
-3. **重新加载扩展后必须刷新目标页面**。这是个高频坑：重载扩展会让**已经打开的页面里的旧内容脚本失联**，不刷新页面就永远是 `Receiving end does not exist` / `503`。
+3. **重新加载扩展后一般无需刷新页面**。扩展 1.4.0 起会在后台启动时自动探测并重新注入内容脚本，孤儿脚本也会自行撤下节点。若个别页面仍报 `Receiving end does not exist` / `503`，让用户手动刷新一次即可（旧版本或权限未授予 `scripting` 时仍需刷新）。
 4. **让一个普通 http/https 页面成为当前活动标签**（且位于当前聚焦的 Chrome 窗口）。`chrome://`、Chrome 应用商店、扩展页等受保护页面无法采集或点击，会返回 `422 page_unavailable`。
 5. 可选的目视检查：页面右下角出现「页面助手」按钮、页面上出现虚拟光标（常驻显示）。
 
@@ -85,7 +85,7 @@ powershell -File .\skills\page-context-chat\scripts\stop_server.ps1
 - **`503 extension_unavailable`**：扩展没连接。先确认 `chrome://extensions/` 里已加载且无报错，重载扩展后**刷新页面**；服务刚启动时扩展 WebSocket 会按 1/2/4/8/10 秒退避重连，等几秒再试。
 - **`422 page_unavailable`**：当前活动页不支持。切到普通 http/https 页面并刷新。
 - **`403 interaction_disabled` / `403 js_execution_disabled`**：服务启动时没开对应开关。按第 0 步重开对应模式。
-- **虚拟光标/页面助手按钮一闪而过或不出现**：内容脚本可能被 SPA 替换了 DOM（已在 1.2.1 起自愈）；更常见的是页面没刷新，仍在跑旧脚本。刷新页面即可。
+- **虚拟光标/页面助手按钮一闪而过或不出现**：内容脚本可能被 SPA 替换了 DOM（1.2.1 起自愈）；也可能是页面仍跑旧脚本——1.4.0 起扩展会自动重新注入，若仍未恢复就让用户刷新一次页面。
 - **8090 被占用**：脚本会返回 `alreadyUp`，或用 `stop_server.ps1` 先停掉旧实例。
 
 ## 脚本说明

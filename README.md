@@ -13,6 +13,7 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 ### 页面聊天组件
 
 - 自动注入到所有普通 HTTP/HTTPS 页面。
+- 扩展重新加载或更新后，会自动向已打开的页面重新注入内容脚本，通常无需手动刷新。
 - 使用关闭的 Shadow DOM 隔离页面样式和组件样式。
 - 支持右下角按钮、响应式聊天面板、发送状态和错误消息。
 - `Enter` 发送，`Shift+Enter` 换行。
@@ -211,10 +212,10 @@ python .\server\server.py --allow-js-execution --allow-interaction
 2. 启用“开发者模式”。
 3. 点击“加载已解压的扩展程序”。
 4. 选择项目中的 `extension` 目录。
-5. 接受 `debugger` 和 `tabs` 权限。
+5. 接受扩展申请的权限（`debugger`、`tabs`、`scripting`）。
 6. 打开或刷新一个 HTTP/HTTPS 页面。
 
-代码或 Manifest 更新后，需要在 `chrome://extensions/` 中点击扩展的“重新加载”，并刷新目标页面。
+代码或 Manifest 更新后，在 `chrome://extensions/` 中点击扩展的“重新加载”即可。扩展 1.4.0 起会在后台启动时自动探测并重新注入内容脚本，**通常无需再手动刷新页面**；若个别页面仍不生效，刷新一次即可（见下文「重载扩展后内容脚本失联」）。
 
 使用分发版本时，改为解压 `release/page-context-chat-extension.zip`，再选择解压出的目录，详见「[安装已打包的扩展](#安装已打包的扩展)」。
 
@@ -516,7 +517,8 @@ WebSocket 单条消息上限为 50 MB。
 |---|---|
 | `tabs` | 定位当前聚焦窗口的活动标签页，并判断是否为 HTTP/HTTPS 页面 |
 | `debugger` | 附加活动标签页并调用 CDP `Runtime.evaluate` 执行代码，或用 `Input.dispatchMouseEvent` 派发真实点击 |
-| `host_permissions` | 允许扩展后台访问 `127.0.0.1:8090` 和 `localhost:8090` |
+| `scripting` | 在扩展重载后向已打开的页面重新注入内容脚本，省去手动刷新 |
+| `host_permissions` | 允许扩展后台访问 `127.0.0.1:8090` 和 `localhost:8090`，并对 HTTP/HTTPS 页面拥有注入权限（供 `scripting` 使用） |
 | HTTP/HTTPS 内容脚本匹配 | 注入聊天 UI、采集当前页面 DOM 和上下文 |
 
 `debugger` 是高权限能力，Chrome 会在执行时显示调试器附加提示。如果 Chrome DevTools 或其他调试器已经附加到同一标签页，JavaScript 执行可能失败。
@@ -580,7 +582,7 @@ python .\server\test_capture_api.py
 
 ### JavaScript alert 集成测试
 
-先以 `--allow-js-execution` 启动服务，并确保扩展 1.1.0 已重新加载：
+先以 `--allow-js-execution` 启动服务，并确保扩展 1.4.0 已重新加载：
 
 ```powershell
 conda run --no-capture-output -n agent python .\server\test_execute_api.py
@@ -599,7 +601,7 @@ conda run --no-capture-output -n agent python .\server\test_execute_api.py
 
 ### 虚拟光标点击集成测试
 
-先以 `--allow-interaction` 启动服务，并确保扩展 1.3.0 已重新加载，且目标 HTTP/HTTPS 页面处于活动状态：
+先以 `--allow-interaction` 启动服务，并确保扩展 1.4.0 已重新加载，且目标 HTTP/HTTPS 页面处于活动状态：
 
 ```powershell
 conda run --no-capture-output -n agent python .\server\test_click_api.py --selector "#some-button"
@@ -710,6 +712,14 @@ Stop-Process -Id $connection.OwningProcess
 - 刷新目标页面，让最新版内容脚本重新注入。
 - `chrome://`、Chrome Web Store 和受保护页面无法采集。
 
+### 重载扩展后页面报 `Receiving end does not exist`
+
+重新加载扩展会让**已打开页面里的旧内容脚本失去 `chrome.runtime` 通道**（“孤儿脚本”）：控件还在，但消息通道已断，于是 `/capture` 报 `Receiving end does not exist`。
+
+扩展 1.4.0 起会自动处理：后台启动时会逐个探测已打开页面（发一条 `PING_PAGE_CONTEXT_CHAT`），发现没有接收端就通过 `chrome.scripting.executeScript` 重新注入 `content.js`；孤儿脚本自身也会检测到通道失效并撤下自己的节点，把位置让给新脚本。因此**通常不需要再手动刷新页面**。
+
+如果仍不生效，检查：扩展是否已重新加载并授予了 `scripting` 权限；该页面是否为受保护页面（这类页面本来就不能注入）。
+
 ### `/execute` 返回 `403 js_execution_disabled`
 
 使用以下命令重启服务：
@@ -731,7 +741,7 @@ python .\server\server.py --allow-interaction
 - 确认选择器能命中元素，且元素位于可视区域内（扩展会自动滚动到元素中央）。
 - 确认当前活动页是 HTTP/HTTPS 页面，且扩展已获得 `debugger` 权限。
 - 如果 Chrome DevTools 已附加到同一标签页，点击可能失败，关闭后重试。
-- 确认页面已刷新，加载的是包含虚拟光标的 1.3.0 内容脚本。
+- 确认页面已刷新，加载的是包含虚拟光标的 1.4.0 内容脚本。
 
 ### `/execute` 返回 `422 execution_failed`
 

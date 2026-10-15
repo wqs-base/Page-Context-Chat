@@ -36,7 +36,7 @@ function connectSocket() {
   socket = new WebSocket(SOCKET_ENDPOINT);
   socket.addEventListener("open", () => {
     reconnectDelay = 1000;
-    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.3.0" });
+    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.4.0" });
     clearInterval(keepaliveTimer);
     keepaliveTimer = setInterval(() => sendSocketMessage({ type: "ping" }), KEEPALIVE_INTERVAL_MS);
   });
@@ -242,7 +242,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
     .catch((error) => {
       const message = error.name === "AbortError"
         ? "本地服务响应超时"
-        : `无法连接本地服务：${error.message}`;
+        : `无法连接本地服务：${error.message}（本地服务可能未启动，请先启动 page-context-chat-server.exe 后重试）`;
       sendResponse({ ok: false, error: message });
     })
     .finally(() => clearTimeout(timeoutId));
@@ -255,5 +255,45 @@ chrome.action.onClicked.addListener((tab) => {
     chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PAGE_CONTEXT_CHAT" }).catch(() => {});
   }
 });
+
+// --- 内容脚本自愈 ---------------------------------------------------------
+// 重新加载/更新扩展会让已打开页面里的旧内容脚本失去 chrome.runtime 通道（孤儿脚本），
+// 此时它不再响应消息，但 UI 节点还留在页面上。这里主动探测并重新注入，省去用户手动刷新页面。
+const CONTENT_SCRIPT_FILE = "content.js";
+
+async function healContentScripts() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
+  } catch {
+    return;
+  }
+
+  await Promise.all(tabs.map(async (tab) => {
+    if (typeof tab.id !== "number" || tab.status !== "complete") {
+      // 仍在加载的页面交给声明式注入处理，避免提前注入造成重复。
+      return;
+    }
+    try {
+      await chrome.tabs.sendMessage(tab.id, { type: "PING_PAGE_CONTEXT_CHAT" });
+      return;
+    } catch {
+      // 没有接收端：页面在扩展加载/重载前就已打开，或旧脚本已成孤儿。重新注入。
+    }
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [CONTENT_SCRIPT_FILE] });
+    } catch {
+      // chrome://、应用商店、已丢弃的标签页等不允许注入，忽略。
+    }
+  }));
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === "install" || details.reason === "update") {
+    healContentScripts();
+  }
+});
+chrome.runtime.onStartup.addListener(healContentScripts);
+healContentScripts();
 
 connectSocket();
