@@ -46,7 +46,7 @@ powershell -File .\skills\page-context-chat\scripts\start_server.ps1 -Mode inter
 ```
 
 - `-Mode` 取第 0 步推断出的值（`plain` / `interaction` / `js` / `full`）。
-- 脚本默认按顺序找 `release/page-context-chat-server.exe`、`server/dist/page-context-chat-server.exe`；也可以用 `-ExePath` 指定。
+- 脚本默认按顺序找：**与本脚本同目录的 `page-context-chat-server.exe`**（技能自带，推荐）、`release/page-context-chat-server.exe`、`server/dist/page-context-chat-server.exe`；也可以用 `-ExePath` 指定。
 - 输出里的 `healthy` 为 `true` 表示服务已就绪；`alreadyUp` 为 `true` 说明 8090 上已经有一个实例，脚本不会重复启动。
 
 **找不到 exe 时**：不要卡住。告诉用户先构建（`powershell -File .\build_release.ps1`），或改用源码方式启动（`python server/server.py <参数>`）——源码与 exe 的接口、参数完全一致，只是没有打包分发。

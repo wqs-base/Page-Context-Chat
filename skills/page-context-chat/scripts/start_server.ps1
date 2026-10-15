@@ -24,19 +24,24 @@ $exeName = "page-context-chat-server.exe"
 
 function Resolve-Exe {
     param([string]$Explicit)
-    if ($Explicit -and (Test-Path -LiteralPath $Explicit)) {
-        return (Resolve-Path -LiteralPath $Explicit).Path
+    if ($Explicit) {
+        if (Test-Path -LiteralPath $Explicit) {
+            return (Resolve-Path -LiteralPath $Explicit).Path
+        }
+        return ""
     }
-    # Skill lives at <repo>/skills/page-context-chat/scripts/, so the repo root is three levels up.
+    # Prefer the exe bundled next to this script, then fall back to the repo's
+    # release/ and build-output locations. The repo root is three levels up
+    # because the skill lives at <repo>/skills/page-context-chat/scripts/.
+    $candidates = @(Join-Path $PSScriptRoot $exeName)
     $repo = Resolve-Path (Join-Path $PSScriptRoot "..\..\..") -ErrorAction SilentlyContinue
     if ($repo) {
-        foreach ($candidate in @(
-                (Join-Path $repo "release\$exeName"),
-                (Join-Path $repo "server\dist\$exeName")
-            )) {
-            if (Test-Path -LiteralPath $candidate) {
-                return (Resolve-Path -LiteralPath $candidate).Path
-            }
+        $candidates += (Join-Path $repo "release\$exeName")
+        $candidates += (Join-Path $repo "server\dist\$exeName")
+    }
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
         }
     }
     return ""

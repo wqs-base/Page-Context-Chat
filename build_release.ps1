@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/env pwsh
-# 一键生成 release 目录下的分发产物：
-#   release\page-context-chat-server.exe       本地服务可执行文件（PyInstaller 构建）
-#   release\page-context-chat-extension.zip    Chrome 扩展打包（zip 根目录即 manifest.json 等）
+# 一键生成分发产物：
+#   skills\page-context-chat\scripts\page-context-chat-server.exe   本地服务可执行文件（技能自带，随技能分发）
+#   release\page-context-chat-extension.zip                         Chrome 扩展打包（zip 根目录即 manifest.json 等）
 #
 # 用法：
 #   pwsh -File .\build_release.ps1
@@ -22,6 +22,7 @@ if (-not $root) {
 $serverDir = Join-Path -Path $root -ChildPath "server"
 $extensionDir = Join-Path -Path $root -ChildPath "extension"
 $releaseDir = Join-Path -Path $root -ChildPath "release"
+$skillScriptsDir = Join-Path -Path $root -ChildPath "skills\page-context-chat\scripts"
 $specFile = Join-Path -Path $serverDir -ChildPath "page_context_chat_server.spec"
 $distDir = Join-Path -Path $serverDir -ChildPath "dist"
 $workDir = Join-Path -Path $serverDir -ChildPath "build"
@@ -54,8 +55,15 @@ if (-not (Test-Path -LiteralPath $builtExe)) {
     throw "未找到构建产物: $builtExe"
 }
 
-# 2. 复制到 release。
-Copy-Item -LiteralPath $builtExe -Destination (Join-Path -Path $releaseDir -ChildPath $exeName) -Force
+# 2. 复制可执行文件到技能脚本目录（start_server.ps1 优先从这里取 exe）。
+New-Item -ItemType Directory -Path $skillScriptsDir -Force | Out-Null
+Copy-Item -LiteralPath $builtExe -Destination (Join-Path -Path $skillScriptsDir -ChildPath $exeName) -Force
+
+# 兼容旧位置：若 release 下还残留同名 exe，清理掉以免混淆。
+$legacyExe = Join-Path -Path $releaseDir -ChildPath $exeName
+if (Test-Path -LiteralPath $legacyExe) {
+    Remove-Item -LiteralPath $legacyExe -Force
+}
 
 # 3. 打包 Chrome 扩展。
 $zipPath = Join-Path -Path $releaseDir -ChildPath $zipName
@@ -65,7 +73,9 @@ if (Test-Path -LiteralPath $zipPath) {
 Compress-Archive -Path (Join-Path -Path $extensionDir -ChildPath "*") -DestinationPath $zipPath -Force
 
 Write-Host ""
-Write-Host "release 目录已更新:"
-Get-ChildItem -LiteralPath $releaseDir | ForEach-Object {
-    "{0}  ({1} MB)" -f $_.Name, [math]::Round($_.Length / 1MB, 2)
+Write-Host "构建产物:"
+foreach ($file in @((Join-Path -Path $skillScriptsDir -ChildPath $exeName), $zipPath)) {
+    if (Test-Path -LiteralPath $file) {
+        "{0}  ({1} MB)" -f $file, [math]::Round((Get-Item -LiteralPath $file).Length / 1MB, 2)
+    }
 }

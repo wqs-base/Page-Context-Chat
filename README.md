@@ -122,14 +122,21 @@ flowchart LR
 chrome-dom-chat/
 |-- .gitignore
 |-- README.md
-|-- build_release.ps1          # 一键生成 release 产物（服务端 exe + 扩展 zip）
+|-- build_release.ps1          # 一键生成分发产物（服务端 exe + 扩展 zip）
 |-- extension/
 |   |-- manifest.json          # Manifest V3、权限和注入配置
 |   |-- background.js          # HTTP 请求、WebSocket、活动页采集和 CDP 执行
 |   `-- content.js             # Shadow DOM UI 和页面上下文采集
-|-- release/                   # 打包好的分发产物（随仓库提交）
-|   |-- page-context-chat-server.exe       # 本地服务可执行文件
+|-- release/                   # 扩展打包产物（随仓库提交）
 |   `-- page-context-chat-extension.zip    # Chrome 扩展打包
+|-- skills/
+|   `-- page-context-chat/     # OpenCode 技能：装扩展 → 起服务 → 验连接
+|       |-- SKILL.md
+|       `-- scripts/
+|           |-- page-context-chat-server.exe   # 本地服务可执行文件（随技能分发）
+|           |-- start_server.ps1               # 后台启动服务并轮询 /health
+|           |-- check_connection.ps1           # 探测服务与扩展连接
+|           `-- stop_server.ps1                # 按端口停止服务
 `-- server/
     |-- requirements.txt       # aiohttp 依赖
     |-- server.py              # HTTP/WebSocket 本地服务
@@ -610,14 +617,16 @@ conda run --no-capture-output -n agent python .\server\test_click_api.py --selec
 
 ## 打包与分发
 
-仓库根目录的 `release/` 存放打包好的分发产物，随仓库一起提交，开箱即用：
+仓库中已包含打包好的分发产物，随仓库一起提交，开箱即用：
 
-| 产物 | 说明 |
-|---|---|
-| `release/page-context-chat-server.exe` | 本地服务可执行文件（Windows 64 位单文件），目标机器无需安装 Python 或 aiohttp |
-| `release/page-context-chat-extension.zip` | Chrome 扩展打包，zip 根目录即 `manifest.json`、`background.js`、`content.js` |
+| 产物 | 位置 | 说明 |
+|---|---|---|
+| 本地服务可执行文件 | `skills/page-context-chat/scripts/page-context-chat-server.exe` | Windows 64 位单文件，目标机器无需安装 Python 或 aiohttp |
+| Chrome 扩展打包 | `release/page-context-chat-extension.zip` | zip 根目录即 `manifest.json`、`background.js`、`content.js` |
 
-### 重新生成 release
+可执行文件放在 `page-context-chat` 技能目录内，技能会优先使用它启动本地服务，因此「安装扩展 → 启动服务 → 检测连接」可以整套照 `skills/page-context-chat/SKILL.md` 走。
+
+### 重新生成分发产物
 
 先安装构建依赖：
 
@@ -633,7 +642,7 @@ pwsh -File .\build_release.ps1
 pwsh -File .\build_release.ps1 -Python "D:\miniforge3\envs\agent\python.exe"
 ```
 
-脚本会先用 PyInstaller 构建服务端 exe（中间产物在 `server/build`、`server/dist`），复制到 `release/`，再把 `extension/` 打包成 `release/page-context-chat-extension.zip`。`build/` 与 `dist/` 已被 `.gitignore` 忽略，属于中间产物。
+脚本会先用 PyInstaller 构建服务端 exe（中间产物在 `server/build`、`server/dist`），复制到 `skills/page-context-chat/scripts/`，再把 `extension/` 打包成 `release/page-context-chat-extension.zip`。`build/` 与 `dist/` 已被 `.gitignore` 忽略，属于中间产物。
 
 只想要服务端 exe 时，也可以单独执行：
 
@@ -647,14 +656,14 @@ python -m PyInstaller --noconfirm --clean `
 
 ### 运行可执行文件
 
-`release/page-context-chat-server.exe` 的启动参数与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），提供以下启动模式：
+`skills/page-context-chat/scripts/page-context-chat-server.exe` 的启动参数与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），提供以下启动模式：
 
 | 模式 | 命令 | 额外开放的接口 |
 |---|---|---|
-| 普通模式（默认） | `.\release\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
-| 页面交互模式 | `.\release\page-context-chat-server.exe --allow-interaction` | `/click` |
-| JavaScript 执行模式 | `.\release\page-context-chat-server.exe --allow-js-execution` | `/execute` |
-| 完整模式 | `.\release\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/execute` |
+| 普通模式（默认） | `.\skills\page-context-chat\scripts\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
+| 页面交互模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-interaction` | `/click` |
+| JavaScript 执行模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution` | `/execute` |
+| 完整模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/execute` |
 
 说明：
 
@@ -675,7 +684,7 @@ python -m PyInstaller --noconfirm --clean `
 
 > Chrome 已不允许从商店外直接安装 `.crx`，因此分发采用 zip + 加载已解压扩展的方式。
 
-> 提示：把大体积二进制直接提交进 Git 会让仓库历史和克隆体积持续变大。若希望更规范地分发，可改为用 GitHub Releases 上传 `release/` 下的文件（例如 `gh release create v1.3.0 release/page-context-chat-server.exe release/page-context-chat-extension.zip`），或在需要时改用 Git LFS。
+> 提示：把大体积二进制直接提交进 Git 会让仓库历史和克隆体积持续变大。若希望更规范地分发，可改为用 GitHub Releases 上传这些产物（例如 `gh release create v1.3.0 skills/page-context-chat/scripts/page-context-chat-server.exe release/page-context-chat-extension.zip`），或在需要时改用 Git LFS。
 
 ## 停止服务
 
