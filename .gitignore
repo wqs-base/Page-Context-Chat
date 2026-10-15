@@ -1,7 +1,6 @@
 __pycache__/
 *.py[cod]
 
-# PyInstaller 构建产物
+# 构建产物（PyInstaller 的输出目录，由构建脚本生成）
 build/
-dist/*
-!server/dist/page-context-chat-server.exe
+dist/

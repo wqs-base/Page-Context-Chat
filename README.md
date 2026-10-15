@@ -122,21 +122,23 @@ flowchart LR
 chrome-dom-chat/
 |-- .gitignore
 |-- README.md
+|-- build_release.ps1          # 一键生成 release 产物（服务端 exe + 扩展 zip）
 |-- extension/
 |   |-- manifest.json          # Manifest V3、权限和注入配置
 |   |-- background.js          # HTTP 请求、WebSocket、活动页采集和 CDP 执行
 |   `-- content.js             # Shadow DOM UI 和页面上下文采集
+|-- release/                   # 打包好的分发产物（随仓库提交）
+|   |-- page-context-chat-server.exe       # 本地服务可执行文件
+|   `-- page-context-chat-extension.zip    # Chrome 扩展打包
 `-- server/
     |-- requirements.txt       # aiohttp 依赖
     |-- server.py              # HTTP/WebSocket 本地服务
-    |-- build_exe.ps1          # PyInstaller 打包脚本
+    |-- build_exe.ps1          # 仅构建服务端可执行文件
     |-- page_context_chat_server.spec   # PyInstaller 打包配置
     |-- test_server.py         # 服务端异步协议单元测试
     |-- test_capture_api.py    # /capture 集成测试脚本
     |-- test_click_api.py      # /click 虚拟光标点击集成测试脚本
-    |-- test_execute_api.py    # /execute alert 集成测试脚本
-    `-- dist/
-        `-- page-context-chat-server.exe   # 已构建的 Windows 可执行文件（随仓库分发）
+    `-- test_execute_api.py    # /execute alert 集成测试脚本
 ```
 
 ## 环境要求
@@ -206,6 +208,8 @@ python .\server\server.py --allow-js-execution --allow-interaction
 6. 打开或刷新一个 HTTP/HTTPS 页面。
 
 代码或 Manifest 更新后，需要在 `chrome://extensions/` 中点击扩展的“重新加载”，并刷新目标页面。
+
+使用分发版本时，改为解压 `release/page-context-chat-extension.zip`，再选择解压出的目录，详见「[安装已打包的扩展](#安装已打包的扩展)」。
 
 ### 6. 使用聊天组件
 
@@ -606,11 +610,14 @@ conda run --no-capture-output -n agent python .\server\test_click_api.py --selec
 
 ## 打包与分发
 
-可以用 PyInstaller 把本地服务打包成单个可执行文件，目标机器无需安装 Python 或 aiohttp。
+仓库根目录的 `release/` 存放打包好的分发产物，随仓库一起提交，开箱即用：
 
-仓库中已包含构建好的 Windows 可执行文件 `server/dist/page-context-chat-server.exe`，可直接下载使用；如需自行构建，见下方步骤。
+| 产物 | 说明 |
+|---|---|
+| `release/page-context-chat-server.exe` | 本地服务可执行文件（Windows 64 位单文件），目标机器无需安装 Python 或 aiohttp |
+| `release/page-context-chat-extension.zip` | Chrome 扩展打包，zip 根目录即 `manifest.json`、`background.js`、`content.js` |
 
-### 构建
+### 重新生成 release
 
 先安装构建依赖：
 
@@ -618,36 +625,36 @@ conda run --no-capture-output -n agent python .\server\test_click_api.py --selec
 python -m pip install pyinstaller
 ```
 
-在项目根目录执行打包脚本：
+在项目根目录执行一键打包脚本：
+
+```powershell
+pwsh -File .\build_release.ps1
+# 或指定解释器
+pwsh -File .\build_release.ps1 -Python "D:\miniforge3\envs\agent\python.exe"
+```
+
+脚本会先用 PyInstaller 构建服务端 exe（中间产物在 `server/build`、`server/dist`），复制到 `release/`，再把 `extension/` 打包成 `release/page-context-chat-extension.zip`。`build/` 与 `dist/` 已被 `.gitignore` 忽略，属于中间产物。
+
+只想要服务端 exe 时，也可以单独执行：
 
 ```powershell
 pwsh -File .\server\build_exe.ps1
-# 或指定解释器
-pwsh -File .\server\build_exe.ps1 -Python "D:\miniforge3\envs\agent\python.exe"
-```
-
-也可以直接调用 spec：
-
-```powershell
+# 或直接调用 spec
 python -m PyInstaller --noconfirm --clean `
   --distpath server/dist --workpath server/build `
   server/page_context_chat_server.spec
 ```
 
-产物为单文件控制台程序 `server/dist/page-context-chat-server.exe`（约 37 MB）。`build/` 与 `dist/` 下的其它文件已被 `.gitignore` 忽略，但该 exe 例外——它已随仓库提交，可直接取用，无需自行构建。
+### 运行可执行文件
 
-> 提示：把大体积二进制直接提交进 Git 会让仓库历史和克隆体积持续变大。若希望更规范地分发，可改为用 GitHub Releases 上传附件（例如 `gh release create v1.3.0 server/dist/page-context-chat-server.exe`），或在需要时改用 Git LFS。
-
-### 运行
-
-`page-context-chat-server.exe` 的启动参数与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），提供以下启动模式：
+`release/page-context-chat-server.exe` 的启动参数与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），提供以下启动模式：
 
 | 模式 | 命令 | 额外开放的接口 |
 |---|---|---|
-| 普通模式（默认） | `.\server\dist\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
-| 页面交互模式 | `.\server\dist\page-context-chat-server.exe --allow-interaction` | `/click` |
-| JavaScript 执行模式 | `.\server\dist\page-context-chat-server.exe --allow-js-execution` | `/execute` |
-| 完整模式 | `.\server\dist\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/execute` |
+| 普通模式（默认） | `.\release\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
+| 页面交互模式 | `.\release\page-context-chat-server.exe --allow-interaction` | `/click` |
+| JavaScript 执行模式 | `.\release\page-context-chat-server.exe --allow-js-execution` | `/execute` |
+| 完整模式 | `.\release\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/execute` |
 
 说明：
 
@@ -657,6 +664,18 @@ python -m PyInstaller --noconfirm --clean `
 - 停止服务：在运行窗口按 `Ctrl+C`。需要后台运行时可用 `Start-Process`，按端口停止的方法见「停止服务」一节。
 - 单文件模式每次启动会把内容解压到临时目录，首次启动略慢，属正常现象；若在意启动速度，可在 spec 中把 `EXE(...)` 拆成 `EXE` + `COLLECT` 生成目录形式。
 - 当前 exe 为 Windows 64 位构建（Python 3.11 + aiohttp 3.14），其它平台需在对应系统上各自构建。
+
+### 安装已打包的扩展
+
+`release/page-context-chat-extension.zip` 解压后即为扩展目录，加载方式与源码一致：
+
+1. 把 zip 解压到任意目录；
+2. 打开 `chrome://extensions/`，启用「开发者模式」；
+3. 点击「加载已解压的扩展程序」，选择解压出的目录。
+
+> Chrome 已不允许从商店外直接安装 `.crx`，因此分发采用 zip + 加载已解压扩展的方式。
+
+> 提示：把大体积二进制直接提交进 Git 会让仓库历史和克隆体积持续变大。若希望更规范地分发，可改为用 GitHub Releases 上传 `release/` 下的文件（例如 `gh release create v1.3.0 release/page-context-chat-server.exe release/page-context-chat-extension.zip`），或在需要时改用 Git LFS。
 
 ## 停止服务
 

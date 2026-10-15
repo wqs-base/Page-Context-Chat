@@ -1,4 +1,4 @@
-#!/usr/bin/env pwsh
+﻿#!/usr/bin/env pwsh
 # 使用 PyInstaller 将本地服务打包为独立可执行文件。
 #
 # 用法：
@@ -11,30 +11,31 @@ param(
     [string]$Python = "python"
 )
 
-$ErrorActionPreference = "Stop"
-
-$serverDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$serverDir = $PSScriptRoot
 $projectRoot = Split-Path -Parent $serverDir
 $specFile = Join-Path $serverDir "page_context_chat_server.spec"
 $distDir = Join-Path $serverDir "dist"
 $workDir = Join-Path $serverDir "build"
+$exeName = "page-context-chat-server.exe"
 
 Push-Location $projectRoot
+# PyInstaller 会把日志写到 stderr；Windows PowerShell 在 ErrorActionPreference=Stop
+# 下会把原生命令的 stderr 视为终止性错误，因此这里临时放开，改用退出码判断结果。
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 try {
-    & $Python -m PyInstaller `
-        --noconfirm `
-        --clean `
-        --distpath $distDir `
-        --workpath $workDir `
-        $specFile
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller 构建失败，退出码 $LASTEXITCODE"
-    }
+    & $Python -m PyInstaller --noconfirm --clean --distpath $distDir --workpath $workDir $specFile
+    $exitCode = $LASTEXITCODE
 } finally {
+    $ErrorActionPreference = $previousPreference
     Pop-Location
 }
 
-$exe = Join-Path $distDir "page-context-chat-server.exe"
+if ($exitCode -ne 0) {
+    throw "PyInstaller 构建失败，退出码 $exitCode"
+}
+
+$exe = Join-Path $distDir $exeName
 if (-not (Test-Path $exe)) {
     throw "未找到构建产物: $exe"
 }
