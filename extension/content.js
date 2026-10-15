@@ -199,7 +199,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.6.2" }
+      client: { name: "page-context-chat", version: "1.6.3" }
     };
 
     try {
@@ -289,6 +289,16 @@
     cursorX = x;
     cursorY = y;
     cursorEl.style.transform = `translate(${x}px, ${y}px)`;
+    // 把当前位置同步到宿主元素的 data-x / data-y，便于 /execute 或自动化脚本核对
+    // 虚拟光标到底走到哪儿了（对比 style.transform 需要访问 closed shadow DOM）。
+    const roundedX = Math.round(x);
+    const roundedY = Math.round(y);
+    if (cursorHost.dataset.x !== String(roundedX)) {
+      cursorHost.dataset.x = String(roundedX);
+    }
+    if (cursorHost.dataset.y !== String(roundedY)) {
+      cursorHost.dataset.y = String(roundedY);
+    }
   }
 
   function nextFrame() {
@@ -615,11 +625,19 @@
 
   placeCursor(cursorX, cursorY);
   window.addEventListener("resize", () => {
+    // 视口尺寸变化（包括 Chrome 调试器横幅出现/收起）只做边界收敛。
+    // 这里绝不能重设跟随目标：横幅收起发生在动作结束数秒之后，会把光标
+    // 从刚操作完的目标上凭空拽回指针旁边。
     placeCursor(
       clamp(cursorX, 0, Math.max(window.innerWidth - 1, 0)),
       clamp(cursorY, 0, Math.max(window.innerHeight - 1, 0))
     );
-    updateFollowTarget();
+    if (followTarget) {
+      followTarget = {
+        x: clamp(followTarget.x, 0, Math.max(window.innerWidth - 1, 0)),
+        y: clamp(followTarget.y, 0, Math.max(window.innerHeight - 1, 0))
+      };
+    }
   });
 
   // --- DOM 自愈：SPA（如 GitHub Turbo）替换 DOM 后重新挂载注入节点 --------
