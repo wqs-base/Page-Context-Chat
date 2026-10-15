@@ -5,7 +5,7 @@
       "page-context-chat": {
         "type": "local",
         "command": [
-          "E:\\python\\Page-Context-Chat\\skills\\page-context-chat\\scripts\\page-context-chat-server.exe",
+          "E:\\python\\Page-Context-Chat\\release\\page-context-chat-server.exe",
           "--mcp"
         ],
         "timeout": {

@@ -155,16 +155,9 @@ chrome-dom-chat/
 |   |-- manifest.json          # Manifest V3、权限和注入配置
 |   |-- background.js          # HTTP 请求、WebSocket、活动页采集和 CDP 执行
 |   `-- content.js             # Shadow DOM UI 和页面上下文采集
-|-- release/                   # 扩展打包产物（随仓库提交）
+|-- release/                   # 分发产物（随仓库提交）
+|   |-- page-context-chat-server.exe       # 本地服务可执行文件（也是 MCP 前端）
 |   `-- page-context-chat-extension.zip    # Chrome 扩展打包
-|-- skills/
-|   `-- page-context-chat/     # OpenCode 技能：装扩展 → 起服务 → 验连接
-|       |-- SKILL.md
-|       `-- scripts/
-|           |-- page-context-chat-server.exe   # 本地服务可执行文件（随技能分发）
-|           |-- start_server.ps1               # 后台启动服务并轮询 /health
-|           |-- check_connection.ps1           # 探测服务与扩展连接
-|           `-- stop_server.ps1                # 按端口停止服务
 `-- server/
     |-- requirements.txt       # aiohttp 依赖
     |-- server.py              # HTTP/WebSocket 本地服务
@@ -649,9 +642,13 @@ flowchart LR
     SVC <-->|WebSocket| EXT[Chrome 扩展]
 ```
 
-### 配置
+### 前提：exe 在哪
 
-仓库根目录已经带了一份可直接使用的 `opencode.json`，克隆后无需改动即可连接：
+MCP 接入只需要一个文件：`release/page-context-chat-server.exe`（Windows 64 位单文件，目标机器无需安装 Python 或 aiohttp）。下文统一用仓库内路径举例，实际配置请换成**本机上的绝对路径**。
+
+### 方式一：直接用仓库自带的 `opencode.json`（推荐）
+
+仓库根目录已经带好一份配置，克隆后无需改动即可使用：
 
 ```jsonc
 {
@@ -661,7 +658,7 @@ flowchart LR
       "page-context-chat": {
         "type": "local",
         "command": [
-          "E:\\python\\Page-Context-Chat\\skills\\page-context-chat\\scripts\\page-context-chat-server.exe",
+          "E:\\python\\Page-Context-Chat\\release\\page-context-chat-server.exe",
           "--mcp"
         ],
         "timeout": { "startup": 60000 },
@@ -672,13 +669,18 @@ flowchart LR
 }
 ```
 
-换到别的机器或别的克隆目录时，把 `command` 里的路径换成该机器上 exe 的**实际绝对路径**即可：
+如果克隆到了别的目录，只需把 `command[0]` 改成该目录下的实际绝对路径。
+
+### 方式二：用命令行添加
 
 ```powershell
-opencode mcp add page-context-chat -- "D:\tools\page-context-chat-server.exe" --mcp
+opencode mcp add page-context-chat -- "E:\python\Page-Context-Chat\release\page-context-chat-server.exe" --mcp
 ```
 
-或手写进全局 `opencode.jsonc`：
+### 方式三：手写进配置
+
+- **项目级**：把上面的 `mcp.servers` 片段写进仓库根目录的 `opencode.json`，只对当前项目生效。
+- **全局级**：写进 `C:\Users\<你的用户名>\.config\opencode\opencode.jsonc`，对所有项目生效：
 
 ```jsonc
 {
@@ -695,11 +697,43 @@ opencode mcp add page-context-chat -- "D:\tools\page-context-chat-server.exe" --
 }
 ```
 
-> **`command` 里必须是真实存在的 exe，并且必须带 `--mcp`。**
-> - 指向不存在的路径（例如下面文档里出现的 `E:\path\to\...` 占位符）会让 MCP 进程立即以退出码 1 结束，客户端报 `Connection closed: MCP server process exited with code 1: 系统找不到指定的路径`（Windows 中文环境下这句 GBK 报错还可能显示成乱码）。
-> - 漏掉 `--mcp` 时 exe 会以普通 HTTP 模式启动并一直占着 `127.0.0.1:8090`，MCP 握手同样失败。
+### 配置项说明
 
-`startup` 调大是因为单文件 exe 首次解包 + 拉起服务需要十几秒。
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `type` | 是 | 固定 `local`：本地进程 + stdio 通信。 |
+| `command` | 是 | 数组。`command[0]` 是 exe 的**绝对路径**，其余元素是启动参数。 |
+| `command` 中的 `--mcp` | **是** | **必须带**。没有它，exe 会以普通 HTTP 服务启动，MCP 握手必然失败。 |
+| `command` 追加 `--mcp-service-mode <mode>` | 否 | 拉起本地服务时的权限档位，取值 `plain` / `interaction` / `js` / `full`，**默认 `full`**（全权限）。 |
+| `timeout.startup` | 否 | 启动超时（毫秒）。单文件 exe 首次解包 + 拉起服务要十几秒，建议 `60000`。 |
+| `enabled` | 否 | 默认 `true`。设为 `false` 可临时停用而不删配置。 |
+
+### 验证
+
+改完配置重启 OpenCode，MCP 面板里 `page-context-chat` 应显示已连接，并列出 5 个工具：`status` / `capture_page` / `click_element` / `type_text` / `execute_script`。
+
+最省事的验证是直接调用 `status`——它会按需把本地服务拉起来，并返回服务是否就绪、扩展是否连上、当前活动页：
+
+```json
+{
+  "service": true,
+  "serviceUrl": "http://127.0.0.1:8090",
+  "serviceMode": "full",
+  "extensionConnected": true,
+  "page": { "url": "https://example.com/", "title": "Example" }
+}
+```
+
+`service: true` 说明服务已就绪；`extensionConnected: false` 表示 Chrome 扩展还没连上（见「常见问题」里的 `503 extension_unavailable`）。
+
+### 配置常见错误
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| `Connection closed: MCP server process exited with code 1: 系统找不到指定的路径` | `command[0]` 指向的 exe 不存在（例如从别处抄了一段占位路径 `E:\path\to\...`） | 换成 exe 的真实绝对路径 |
+| 同上，但报错显示成乱码 | 上面那句 GBK 文本被控制台按错误编码渲染，信息本身不变 | 按上一条处理 |
+| MCP 始终连不上，且 `127.0.0.1:8090` 已被占用 | 漏掉了 `--mcp`，exe 退化成普通 HTTP 服务常驻 | 补上 `--mcp`，并先停掉 8090 上的进程（见「停止服务」） |
+| 工具列表里没有 `click_element` / `type_text` / `execute_script` | `--mcp-service-mode` 被收窄成 `plain`，对应接口未开放 | 改成 `interaction` / `js` / `full` |
 
 ### 工具
 
@@ -717,7 +751,7 @@ opencode mcp add page-context-chat -- "D:\tools\page-context-chat-server.exe" --
 
 ```jsonc
 "command": [
-  "E:\\python\\Page-Context-Chat\\skills\\page-context-chat\\scripts\\page-context-chat-server.exe",
+  "E:\\python\\Page-Context-Chat\\release\\page-context-chat-server.exe",
   "--mcp",
   "--mcp-service-mode", "interaction"
 ]
@@ -876,10 +910,10 @@ conda run --no-capture-output -n agent python .\server\test_type_api.py --select
 
 | 产物 | 位置 | 说明 |
 |---|---|---|
-| 本地服务可执行文件 | `skills/page-context-chat/scripts/page-context-chat-server.exe` | Windows 64 位单文件，目标机器无需安装 Python 或 aiohttp |
+| 本地服务可执行文件 | `release/page-context-chat-server.exe` | Windows 64 位单文件，目标机器无需安装 Python 或 aiohttp |
 | Chrome 扩展打包 | `release/page-context-chat-extension.zip` | zip 根目录即 `manifest.json`、`background.js`、`content.js` |
 
-可执行文件放在 `page-context-chat` 技能目录内，技能会优先使用它启动本地服务，因此「安装扩展 → 启动服务 → 检测连接」可以整套照 `skills/page-context-chat/SKILL.md` 走。
+可执行文件和扩展包都放在 `release/` 下，开箱即用：exe 既可以手动启动本地服务（见「运行可执行文件」），也可以直接作为 MCP server 接给编码代理（见「MCP 接入」）。
 
 ### 重新生成分发产物
 
@@ -897,7 +931,7 @@ pwsh -File .\build_release.ps1
 pwsh -File .\build_release.ps1 -Python "D:\miniforge3\envs\agent\python.exe"
 ```
 
-脚本会先用 PyInstaller 构建服务端 exe（中间产物在 `server/build`、`server/dist`），复制到 `skills/page-context-chat/scripts/`，再把 `extension/` 打包成 `release/page-context-chat-extension.zip`。`build/` 与 `dist/` 已被 `.gitignore` 忽略，属于中间产物。
+脚本会先用 PyInstaller 构建服务端 exe（中间产物在 `server/build`、`server/dist`），复制到 `release/`，再把 `extension/` 打包成 `release/page-context-chat-extension.zip`。`build/` 与 `dist/` 已被 `.gitignore` 忽略，属于中间产物。
 
 只想要服务端 exe 时，也可以单独执行：
 
@@ -911,15 +945,15 @@ python -m PyInstaller --noconfirm --clean `
 
 ### 运行可执行文件
 
-`skills/page-context-chat/scripts/page-context-chat-server.exe` 的启动参数与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），提供以下启动模式：
+`release/page-context-chat-server.exe` 的启动参数与 `python .\server\server.py` 完全一致（Argparse 逻辑未改动），提供以下启动模式：
 
 | 模式 | 命令 | 额外开放的接口 |
 |---|---|---|
-| 普通模式（默认） | `.\skills\page-context-chat\scripts\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
-| 页面交互模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-interaction` | `/click` + `/type` |
-| JavaScript 执行模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution` | `/execute` |
-| 完整模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/type` + `/execute` |
-| MCP 模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --mcp` | 本进程不开放 HTTP，改为向 MCP 客户端提供工具，并按 `--mcp-service-mode`（默认全权限）拉起本地服务 |
+| 普通模式（默认） | `.\release\page-context-chat-server.exe` | 无，仅 `/health`、`/chat`、`/capture`、`/ws` |
+| 页面交互模式 | `.\release\page-context-chat-server.exe --allow-interaction` | `/click` + `/type` |
+| JavaScript 执行模式 | `.\release\page-context-chat-server.exe --allow-js-execution` | `/execute` |
+| 完整模式 | `.\release\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/type` + `/execute` |
+| MCP 模式 | `.\release\page-context-chat-server.exe --mcp` | 本进程不开放 HTTP，改为向 MCP 客户端提供工具，并按 `--mcp-service-mode`（默认全权限）拉起本地服务 |
 
 说明：
 
@@ -940,7 +974,7 @@ python -m PyInstaller --noconfirm --clean `
 
 > Chrome 已不允许从商店外直接安装 `.crx`，因此分发采用 zip + 加载已解压扩展的方式。
 
-> 提示：把大体积二进制直接提交进 Git 会让仓库历史和克隆体积持续变大。若希望更规范地分发，可改为用 GitHub Releases 上传这些产物（例如 `gh release create v1.3.0 skills/page-context-chat/scripts/page-context-chat-server.exe release/page-context-chat-extension.zip`），或在需要时改用 Git LFS。
+> 提示：把大体积二进制直接提交进 Git 会让仓库历史和克隆体积持续变大。若希望更规范地分发，可改为用 GitHub Releases 上传这些产物（例如 `gh release create v1.3.0 release/page-context-chat-server.exe release/page-context-chat-extension.zip`），或在需要时改用 Git LFS。
 
 ## 停止服务
 

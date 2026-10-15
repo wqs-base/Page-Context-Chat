@@ -1,6 +1,6 @@
 ﻿#!/usr/bin/env pwsh
 # 一键生成分发产物：
-#   skills\page-context-chat\scripts\page-context-chat-server.exe   本地服务可执行文件（技能自带，随技能分发）
+#   release\page-context-chat-server.exe                            本地服务可执行文件（随仓库分发）
 #   release\page-context-chat-extension.zip                         Chrome 扩展打包（zip 根目录即 manifest.json 等）
 #
 # 用法：
@@ -22,12 +22,12 @@ if (-not $root) {
 $serverDir = Join-Path -Path $root -ChildPath "server"
 $extensionDir = Join-Path -Path $root -ChildPath "extension"
 $releaseDir = Join-Path -Path $root -ChildPath "release"
-$skillScriptsDir = Join-Path -Path $root -ChildPath "skills\page-context-chat\scripts"
 $specFile = Join-Path -Path $serverDir -ChildPath "page_context_chat_server.spec"
 $distDir = Join-Path -Path $serverDir -ChildPath "dist"
 $workDir = Join-Path -Path $serverDir -ChildPath "build"
 $exeName = "page-context-chat-server.exe"
 $zipName = "page-context-chat-extension.zip"
+$releaseExe = Join-Path -Path $releaseDir -ChildPath $exeName
 
 Write-Host "项目根目录: $root"
 Write-Host "Python:     $Python"
@@ -55,15 +55,8 @@ if (-not (Test-Path -LiteralPath $builtExe)) {
     throw "未找到构建产物: $builtExe"
 }
 
-# 2. 复制可执行文件到技能脚本目录（start_server.ps1 优先从这里取 exe）。
-New-Item -ItemType Directory -Path $skillScriptsDir -Force | Out-Null
-Copy-Item -LiteralPath $builtExe -Destination (Join-Path -Path $skillScriptsDir -ChildPath $exeName) -Force
-
-# 兼容旧位置：若 release 下还残留同名 exe，清理掉以免混淆。
-$legacyExe = Join-Path -Path $releaseDir -ChildPath $exeName
-if (Test-Path -LiteralPath $legacyExe) {
-    Remove-Item -LiteralPath $legacyExe -Force
-}
+# 2. 复制可执行文件到 release\（MCP 客户端与手动启动都从这里取）。
+Copy-Item -LiteralPath $builtExe -Destination $releaseExe -Force
 
 # 3. 打包 Chrome 扩展。
 $zipPath = Join-Path -Path $releaseDir -ChildPath $zipName
@@ -74,7 +67,7 @@ Compress-Archive -Path (Join-Path -Path $extensionDir -ChildPath "*") -Destinati
 
 Write-Host ""
 Write-Host "构建产物:"
-foreach ($file in @((Join-Path -Path $skillScriptsDir -ChildPath $exeName), $zipPath)) {
+foreach ($file in @($releaseExe, $zipPath)) {
     if (Test-Path -LiteralPath $file) {
         "{0}  ({1} MB)" -f $file, [math]::Round((Get-Item -LiteralPath $file).Length / 1MB, 2)
     }
