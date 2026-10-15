@@ -1,6 +1,6 @@
 ---
 name: page-context-chat
-description: 运行和试用 Page Context Chat 浏览器页面助手（本仓库的 Chrome 扩展 + 本地服务）。负责固定的三步准备链路：先提醒用户安装或重新加载 Chrome 扩展，再根据用户描述选择合适的启动参数在后台拉起本地服务可执行文件，最后检测“服务是否就绪、扩展是否连上”。只要用户想把这个页面助手跑起来、想装/更新它的插件、说扩展连不上或虚拟光标/页面助手按钮不出现、提到 8090 端口或 release 里的 exe、要用虚拟光标点击页面、要模拟打字输入到页面输入框、要采集当前页面、要执行 /capture /click /type /execute，或说“打开页面助手试试”“本地服务起不来”，就使用本技能，即使用户没有明说“用技能”。仅当用户只是改代码、看代码或讨论设计而不需要把它跑起来验证时，不要使用。
+description: 运行和试用 Page Context Chat 浏览器页面助手（本仓库的 Chrome 扩展 + 本地服务）。负责固定的三步准备链路：先提醒用户安装或重新加载 Chrome 扩展，再根据用户描述选择合适的启动参数在后台拉起本地服务可执行文件，最后检测“服务是否就绪、扩展是否连上”。只要用户想把这个页面助手跑起来、想装/更新它的插件、说扩展连不上或虚拟光标/页面助手按钮不出现、提到 8090 端口或 release 里的 exe、要用虚拟光标点击页面、要模拟打字输入到页面输入框、要采集当前页面、要执行 /capture /click /type /execute，或要把它接成 MCP server 给编码代理用、说“打开页面助手试试”“本地服务起不来”，就使用本技能，即使用户没有明说“用技能”。仅当用户只是改代码、看代码或讨论设计而不需要把它跑起来验证时，不要使用。
 ---
 
 # Page Context Chat 运行助手
@@ -8,6 +8,18 @@ description: 运行和试用 Page Context Chat 浏览器页面助手（本仓库
 这个技能把「让页面助手真正跑起来」这件事固定成一条三步链路：**装扩展 → 起服务 → 验连接**。三步都要走完，跳过任何一步后面都会以难懂的错误收场（典型是扩展根本没连上，却去怀疑服务或代码）。
 
 仓库根目录即本技能向上三级（`<repo>/skills/page-context-chat/`）。相关背景和接口细节以仓库 `README.md` 为准。
+
+## 先看一句：宿主支持 MCP 的话，优先接 MCP
+
+如果宿主是 MCP 客户端（OpenCode、Claude Desktop 等），**不要走下面第 2、3 步的手动起服务流程**，直接把这一个 exe 接成 MCP server 就行——它会自己把服务拉起来，并暴露 `status` / `capture_page` / `click_element` / `type_text` / `execute_script` 五个工具：
+
+```powershell
+opencode mcp add page-context-chat -- "<repo>\skills\page-context-chat\scripts\page-context-chat-server.exe" --mcp
+```
+
+- 默认以**全权限**拉起服务；收窄加 `--mcp-service-mode plain|interaction|js|full`。
+- 好处：不用手动起服务、不用拼 `Invoke-RestMethod`、也没有 PowerShell 把中文 Body 按 ASCII 编码那类坑。
+- **本技能此时只剩两件事**：第 1 步（让用户装好/重载扩展）＋ 下面的排障速查。第 2、3 步只在没有 MCP 宿主时用。
 
 ## 第 0 步：从用户描述判断启动模式
 

@@ -395,7 +395,27 @@ def main() -> None:
         action="store_true",
         help="enable the high-risk POST /click and POST /type endpoints",
     )
+    parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="run as an MCP stdio server for AI agent clients (launches the HTTP service and talks to it)",
+    )
+    parser.add_argument(
+        "--mcp-service-mode",
+        choices=("plain", "interaction", "js", "full"),
+        default="full",
+        help="permission mode used when --mcp launches the local service (default: full)",
+    )
     args = parser.parse_args()
+
+    if args.mcp:
+        # MCP 模式：本进程只负责「拉起本地服务 + 通过 HTTP 调它」，自己不监听端口。
+        # stdout 是 MCP 的 JSON-RPC 通道，所以这条分支里不能有任何 print。
+        from mcp_stdio import run_mcp_stdio
+
+        run_mcp_stdio(args.mcp_service_mode)
+        return
+
     print(f"Page Context Chat server listening on http://{HOST}:{PORT}")
     if args.allow_js_execution:
         print("WARNING: arbitrary JavaScript execution is enabled for the active browser tab")

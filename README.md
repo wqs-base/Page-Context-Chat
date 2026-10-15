@@ -167,12 +167,14 @@ chrome-dom-chat/
 `-- server/
     |-- requirements.txt       # aiohttp 依赖
     |-- server.py              # HTTP/WebSocket 本地服务
+    |-- mcp_stdio.py           # MCP stdio 前端（拉起服务 + 通过 HTTP 调用）
     |-- build_exe.ps1          # 仅构建服务端可执行文件
     |-- page_context_chat_server.spec   # PyInstaller 打包配置
     |-- test_server.py         # 服务端异步协议单元测试
     |-- test_capture_api.py    # /capture 集成测试脚本
     |-- test_click_api.py      # /click 虚拟光标点击集成测试脚本
     |-- test_type_api.py       # /type 模拟输入集成测试脚本
+    |-- test_mcp_stdio.py      # MCP stdio 协议与 UTF-8 回归测试
     `-- test_execute_api.py    # /execute alert 集成测试脚本
 ```
 
@@ -635,6 +637,73 @@ Invoke-RestMethod `
 
 WebSocket 单条消息上限为 50 MB。
 
+## MCP 接入（AI 编码代理）
+
+同一个 exe 带 `--mcp` 就是 **MCP stdio 前端**：它负责**把本地服务拉起来**，之后**通过 HTTP 调它**。这个进程自己不监听任何端口，扩展和上面所有接口都不需要改动。
+
+```mermaid
+flowchart LR
+    AG[AI 编码代理 / MCP 客户端] -->|stdio JSON-RPC| MCP["page-context-chat-server --mcp"]
+    MCP -->|"按需拉起 + HTTP 调用"| SVC["本地服务 127.0.0.1:8090"]
+    SVC <-->|WebSocket| EXT[Chrome 扩展]
+```
+
+### 配置
+
+```powershell
+opencode mcp add page-context-chat -- "E:\path\to\page-context-chat-server.exe" --mcp
+```
+
+或手写进 `opencode.jsonc`：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "page-context-chat": {
+        "type": "local",
+        "command": ["E:\\path\\to\\page-context-chat-server.exe", "--mcp"],
+        "timeout": { "startup": 60000 }
+      }
+    }
+  }
+}
+```
+
+`startup` 调大是因为单文件 exe 首次解包 + 拉起服务需要十几秒。
+
+### 工具
+
+| 工具 | 对应接口 | 说明 |
+|---|---|---|
+| `status` | `/health` + `/capture` | 服务是否就绪、扩展是否连上、当前活动页；**开始任何页面操作前先调它** |
+| `capture_page` | `/capture` | 页面标题/URL/可见文本/可交互元素；**默认不返回整页 HTML**（需要时传 `include_html`） |
+| `click_element` | `/click` | 虚拟光标真实点击，支持 CSS 或 `text=` / `text*=` |
+| `type_text` | `/type` | 模拟键盘输入，可选 `clear` / `submit` / `delay_ms` |
+| `execute_script` | `/execute` | 主世界执行 JavaScript |
+
+### 权限
+
+`--mcp` 拉起服务时**默认全权限**（`--allow-js-execution --allow-interaction`）。要收窄就加参数：
+
+```jsonc
+"command": ["E:\\path\\to\\page-context-chat-server.exe", "--mcp", "--mcp-service-mode", "interaction"]
+```
+
+取值 `plain` / `interaction` / `js` / `full`。MCP 客户端侧还能按工具名再拦一道（OpenCode）：
+
+```jsonc
+"permissions": [{ "action": "page_context_chat_execute_script", "resource": "*", "effect": "deny" }]
+```
+
+### 实现上的三个注意点
+
+- **stdout 是协议通道**：MCP 前端所有日志走 stderr，被拉起的服务的 stdout 也重定向到日志文件，绝不能继承协议流。
+- **协议是 UTF-8**：Windows 中文环境下 `sys.stdin.encoding` 是 **GBK**，按文本读会把 `通道测试` 解成 `鎫求仅婴寭畿` 并一路传到页面里。实现改为按字节读、显式 UTF-8 解码；写 stdout 也写 UTF-8 字节（否则页面里的 `›` 这类字符会因 GBK 编不出来而报错）。
+- **单文件模式要给子进程清理环境**：PyInstaller 会把 `_MEIPASS2` 传给子进程，继承后新实例会复用 MCP 进程的临时解包目录，导致本进程退不干净、服务还依赖了一个会被删掉的目录。拉起前会剔除 `_MEI*` / `_PYI*` 变量。
+- **服务单例**：已在运行就直接复用，不重复启动；扩展的连接也不会随 MCP 会话结束而断开。
+
 ## 权限说明
 
 | 权限 | 用途 |
@@ -656,6 +725,7 @@ WebSocket 单条消息上限为 50 MB。
 - `/execute` 默认关闭，必须显式使用启动参数。
 - `/click` 默认关闭，必须显式使用 `--allow-interaction`；它会以真实鼠标事件点击任意由选择器命中的元素，可能触发提交、删除或支付等不可逆操作。
 - `/type` 同样默认关闭，必须显式使用 `--allow-interaction`；它会向任意由选择器命中的元素输入文本，配合 `submit` 可以触发搜索、提交等操作。
+- `--mcp` 默认以**全权限**拉起本地服务（`--allow-js-execution --allow-interaction`）：这意味着任何能访问 `127.0.0.1:8090` 的本地进程都能无鉴权调用 `/execute`。需要收窄就用 `--mcp-service-mode`，或在 MCP 客户端侧按 `page_context_chat_execute_script` 之类的工具名 deny。
 - 页面 HTML 不截断，发送前应确认页面是否含敏感信息。
 - HTTP 请求体和 WebSocket 单条消息上限均为 50 MB。
 - 页面上下文和聊天历史不持久化到数据库，但占位聊天实现会将上下文打印到服务端控制台。
@@ -682,6 +752,7 @@ python -m unittest server.test_server -v
 - 启用后 `/click` WebSocket 往返、结果返回和扩展失败回传。
 - `/type` 默认关闭。
 - 启用后 `/type` WebSocket 往返、参数校验（空文本、选择器、`delayMs` 范围与总耗时）和扩展失败回传。
+- MCP 前端：`initialize` 回显协议版本、`tools/list` 返回 5 个工具、未知方法返回 `-32601`、参数校验失败回传 `isError` 结果，以及把 `PYTHONIOENCODING=gbk` 注入子进程后 UTF-8 参数（中文）仍不被解成乱码。
 
 ### 页面采集集成测试
 
@@ -816,6 +887,7 @@ python -m PyInstaller --noconfirm --clean `
 | 页面交互模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-interaction` | `/click` + `/type` |
 | JavaScript 执行模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution` | `/execute` |
 | 完整模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --allow-js-execution --allow-interaction` | `/click` + `/type` + `/execute` |
+| MCP 模式 | `.\skills\page-context-chat\scripts\page-context-chat-server.exe --mcp` | 本进程不开放 HTTP，改为向 MCP 客户端提供工具，并按 `--mcp-service-mode`（默认全权限）拉起本地服务 |
 
 说明：
 
