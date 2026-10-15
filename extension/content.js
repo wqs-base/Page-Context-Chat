@@ -199,7 +199,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.6.0" }
+      client: { name: "page-context-chat", version: "1.6.1" }
     };
 
     try {
@@ -337,6 +337,10 @@
   const FOLLOW_OFFSET_Y = 12;
   const FOLLOW_EASING = 0.3;
   const FOLLOW_STORAGE_KEY = "cursorFollow";
+  // 自动化动作（/click、/type）期间及结束后一小段时间内忽略跟随，
+  // 否则滚动引发的合成 mousemove、CDP 派发的 mouseMoved 会把光标从目标拽回指针。
+  const FOLLOW_RELEASE_DELAY_MS = 400;
+  const FOLLOW_HOLD_MAX_MS = 120000; // 兜底：动作回包丢失时最多按住 2 分钟
 
   const followToggle = panel.querySelector(".follow input");
   const followStorage = chrome.storage?.local ?? null;
@@ -345,6 +349,19 @@
   let followTarget = null;
   let pointerX = null;
   let pointerY = null;
+  let followHeldUntil = 0;
+
+  function isFollowHeld() {
+    return performance.now() < followHeldUntil;
+  }
+
+  function beginFollowHold() {
+    followHeldUntil = performance.now() + FOLLOW_HOLD_MAX_MS;
+  }
+
+  function endFollowHold() {
+    followHeldUntil = performance.now() + FOLLOW_RELEASE_DELAY_MS;
+  }
 
   function scheduleFollowFrame() {
     if (followFrame === null) {
@@ -354,7 +371,7 @@
 
   function followStep() {
     followFrame = null;
-    if (!followEnabled || cursorAnimation || !followTarget) {
+    if (!followEnabled || cursorAnimation || isFollowHeld() || !followTarget) {
       return;
     }
     if (!isExtensionAlive()) {
@@ -376,7 +393,7 @@
   }
 
   function updateFollowTarget() {
-    if (!followEnabled || pointerX === null || pointerY === null) {
+    if (!followEnabled || isFollowHeld() || pointerX === null || pointerY === null) {
       return;
     }
     followTarget = {
@@ -393,6 +410,7 @@
       return;
     }
     followTarget = null;
+    followHeldUntil = 0;
     if (followFrame !== null) {
       cancelAnimationFrame(followFrame);
       followFrame = null;
@@ -482,6 +500,8 @@
   }
 
   async function scrollAndPointTo(element) {
+    // 自动化动作开始：跟随让位，直到后台回传 CLICK_FEEDBACK / TYPE_FEEDBACK 才解除。
+    beginFollowHold();
     const previousScrollBehavior = document.documentElement.style.scrollBehavior;
     document.documentElement.style.scrollBehavior = "auto";
     element.scrollIntoView({ block: "center", inline: "center" });
@@ -681,6 +701,7 @@
     }
     if (request?.type === "CLICK_FEEDBACK" || request?.type === "TYPE_FEEDBACK") {
       pulseCursor(Boolean(request.ok));
+      endFollowHold();
       return false;
     }
     return false;
