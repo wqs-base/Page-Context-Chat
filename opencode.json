@@ -1,0 +1,18 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "page-context-chat": {
+        "type": "local",
+        "command": [
+          "E:\\python\\Page-Context-Chat\\skills\\page-context-chat\\scripts\\page-context-chat-server.exe",
+          "--mcp"
+        ],
+        "timeout": {
+          "startup": 60000
+        },
+        "enabled": true
+      }
+    }
+  }
+}

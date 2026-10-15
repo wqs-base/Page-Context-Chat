@@ -149,6 +149,7 @@ flowchart LR
 chrome-dom-chat/
 |-- .gitignore
 |-- README.md
+|-- opencode.json              # OpenCode MCP 接入配置（page-context-chat）
 |-- build_release.ps1          # 一键生成分发产物（服务端 exe + 扩展 zip）
 |-- extension/
 |   |-- manifest.json          # Manifest V3、权限和注入配置
@@ -650,11 +651,7 @@ flowchart LR
 
 ### 配置
 
-```powershell
-opencode mcp add page-context-chat -- "E:\path\to\page-context-chat-server.exe" --mcp
-```
-
-或手写进 `opencode.jsonc`：
+仓库根目录已经带了一份可直接使用的 `opencode.json`，克隆后无需改动即可连接：
 
 ```jsonc
 {
@@ -663,13 +660,44 @@ opencode mcp add page-context-chat -- "E:\path\to\page-context-chat-server.exe" 
     "servers": {
       "page-context-chat": {
         "type": "local",
-        "command": ["E:\\path\\to\\page-context-chat-server.exe", "--mcp"],
+        "command": [
+          "E:\\python\\Page-Context-Chat\\skills\\page-context-chat\\scripts\\page-context-chat-server.exe",
+          "--mcp"
+        ],
+        "timeout": { "startup": 60000 },
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+换到别的机器或别的克隆目录时，把 `command` 里的路径换成该机器上 exe 的**实际绝对路径**即可：
+
+```powershell
+opencode mcp add page-context-chat -- "D:\tools\page-context-chat-server.exe" --mcp
+```
+
+或手写进全局 `opencode.jsonc`：
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "page-context-chat": {
+        "type": "local",
+        "command": ["D:\\tools\\page-context-chat-server.exe", "--mcp"],
         "timeout": { "startup": 60000 }
       }
     }
   }
 }
 ```
+
+> **`command` 里必须是真实存在的 exe，并且必须带 `--mcp`。**
+> - 指向不存在的路径（例如下面文档里出现的 `E:\path\to\...` 占位符）会让 MCP 进程立即以退出码 1 结束，客户端报 `Connection closed: MCP server process exited with code 1: 系统找不到指定的路径`（Windows 中文环境下这句 GBK 报错还可能显示成乱码）。
+> - 漏掉 `--mcp` 时 exe 会以普通 HTTP 模式启动并一直占着 `127.0.0.1:8090`，MCP 握手同样失败。
 
 `startup` 调大是因为单文件 exe 首次解包 + 拉起服务需要十几秒。
 
@@ -688,7 +716,11 @@ opencode mcp add page-context-chat -- "E:\path\to\page-context-chat-server.exe" 
 `--mcp` 拉起服务时**默认全权限**（`--allow-js-execution --allow-interaction`）。要收窄就加参数：
 
 ```jsonc
-"command": ["E:\\path\\to\\page-context-chat-server.exe", "--mcp", "--mcp-service-mode", "interaction"]
+"command": [
+  "E:\\python\\Page-Context-Chat\\skills\\page-context-chat\\scripts\\page-context-chat-server.exe",
+  "--mcp",
+  "--mcp-service-mode", "interaction"
+]
 ```
 
 取值 `plain` / `interaction` / `js` / `full`。MCP 客户端侧还能按工具名再拦一道（OpenCode）：
