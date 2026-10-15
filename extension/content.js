@@ -70,6 +70,11 @@
     textarea::placeholder { color: #7b8782; }
     .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
     .context-note { color: #697570; font-size: 11px; }
+    .follow {
+      display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+      color: #697570; font-size: 11px; cursor: pointer; user-select: none;
+    }
+    .follow input { width: 13px; height: 13px; margin: 0; accent-color: #176b52; cursor: pointer; }
     .send {
       min-width: 68px; height: 34px; padding: 0 14px; border: 1px solid #1c5f4a; border-radius: 5px;
       background: #176b52; color: #fff; font-size: 13px; font-weight: 650; letter-spacing: 0; cursor: pointer;
@@ -104,6 +109,9 @@
       <textarea name="message" aria-label="消息" placeholder="询问当前页面内容..." required></textarea>
       <div class="actions">
         <span class="context-note">发送完整页面 HTML</span>
+        <label class="follow" title="开启后虚拟光标会跟随真实鼠标指针">
+          <input type="checkbox"> 跟随鼠标
+        </label>
         <button class="send" type="submit">发送</button>
       </div>
     </form>
@@ -191,7 +199,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.5.0" }
+      client: { name: "page-context-chat", version: "1.6.0" }
     };
 
     try {
@@ -319,6 +327,99 @@
       }
       cursorAnimation = requestAnimationFrame(step);
     });
+  }
+
+  // --- 跟随真实光标 -------------------------------------------------------
+  // 开启后虚拟光标以固定偏移、每帧向真实指针缓动的形式跟随（“平滑拖尾”）。
+  // 自动化动作（/click、/type）播放移动动画期间跟随自动让位，动画结束后由下一次
+  // 鼠标移动把光标重新领回指针旁边。
+  const FOLLOW_OFFSET_X = 10;
+  const FOLLOW_OFFSET_Y = 12;
+  const FOLLOW_EASING = 0.3;
+  const FOLLOW_STORAGE_KEY = "cursorFollow";
+
+  const followToggle = panel.querySelector(".follow input");
+  const followStorage = chrome.storage?.local ?? null;
+  let followEnabled = false;
+  let followFrame = null;
+  let followTarget = null;
+  let pointerX = null;
+  let pointerY = null;
+
+  function scheduleFollowFrame() {
+    if (followFrame === null) {
+      followFrame = requestAnimationFrame(followStep);
+    }
+  }
+
+  function followStep() {
+    followFrame = null;
+    if (!followEnabled || cursorAnimation || !followTarget) {
+      return;
+    }
+    if (!isExtensionAlive()) {
+      // 孤儿脚本：停掉跟随，避免在已经撤下的节点上继续绘制。
+      followEnabled = false;
+      return;
+    }
+    const dx = followTarget.x - cursorX;
+    const dy = followTarget.y - cursorY;
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+      placeCursor(followTarget.x, followTarget.y);
+      return;
+    }
+    placeCursor(
+      clamp(cursorX + dx * FOLLOW_EASING, 0, Math.max(window.innerWidth - 1, 0)),
+      clamp(cursorY + dy * FOLLOW_EASING, 0, Math.max(window.innerHeight - 1, 0))
+    );
+    scheduleFollowFrame();
+  }
+
+  function updateFollowTarget() {
+    if (!followEnabled || pointerX === null || pointerY === null) {
+      return;
+    }
+    followTarget = {
+      x: pointerX + FOLLOW_OFFSET_X,
+      y: pointerY + FOLLOW_OFFSET_Y
+    };
+    scheduleFollowFrame();
+  }
+
+  function setFollowEnabled(enabled) {
+    followEnabled = Boolean(enabled);
+    if (followEnabled) {
+      updateFollowTarget();
+      return;
+    }
+    followTarget = null;
+    if (followFrame !== null) {
+      cancelAnimationFrame(followFrame);
+      followFrame = null;
+    }
+  }
+
+  // 无论开关是否打开都记录指针位置，这样打开跟随的瞬间光标就会滑向指针。
+  document.addEventListener("mousemove", (event) => {
+    pointerX = event.clientX;
+    pointerY = event.clientY;
+    updateFollowTarget();
+  }, { capture: true, passive: true });
+
+  followToggle.addEventListener("change", () => {
+    setFollowEnabled(followToggle.checked);
+    if (followStorage) {
+      followStorage.set({ [FOLLOW_STORAGE_KEY]: followToggle.checked }).catch(() => {});
+    }
+  });
+
+  if (followStorage) {
+    followStorage.get(FOLLOW_STORAGE_KEY)
+      .then((stored) => {
+        followToggle.checked = Boolean(stored?.[FOLLOW_STORAGE_KEY]);
+        setFollowEnabled(followToggle.checked);
+      })
+      .catch(() => {});
   }
 
   const CLICKABLE_SELECTOR = [
@@ -492,6 +593,7 @@
       clamp(cursorX, 0, Math.max(window.innerWidth - 1, 0)),
       clamp(cursorY, 0, Math.max(window.innerHeight - 1, 0))
     );
+    updateFollowTarget();
   });
 
   // --- DOM 自愈：SPA（如 GitHub Turbo）替换 DOM 后重新挂载注入节点 --------

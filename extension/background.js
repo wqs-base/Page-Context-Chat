@@ -36,7 +36,7 @@ function connectSocket() {
   socket = new WebSocket(SOCKET_ENDPOINT);
   socket.addEventListener("open", () => {
     reconnectDelay = 1000;
-    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.5.0" });
+    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.6.0" });
     clearInterval(keepaliveTimer);
     keepaliveTimer = setInterval(() => sendSocketMessage({ type: "ping" }), KEEPALIVE_INTERVAL_MS);
   });

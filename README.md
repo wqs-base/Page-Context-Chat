@@ -77,6 +77,7 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 - 扩展先让目标元素滚动到可视区域中央，再让虚拟光标平滑移动到元素中心，最后通过 CDP `Input.dispatchMouseEvent` 在坐标点派发 `mouseMoved`、`mousePressed`、`mouseReleased`，产生 `isTrusted` 的真实鼠标点击。
 - 点击成功用绿色圆环反馈，失败用红色圆环反馈。
 - 注入的聊天组件和虚拟光标会在 DOM 被替换后自动重新挂载，兼容 GitHub 等采用 Turbo/SPA 软导航的页面。
+- 聊天面板右下角有「跟随鼠标」开关：开启后虚拟光标会带一点右下偏移、以平滑拖尾的形式跟随真实指针；此时 `/click`、`/type` 仍会从指针旁平滑移动到目标，动作结束后由下一次鼠标移动把光标领回指针旁。开关状态用 `chrome.storage.local` 全局保存，所有页面共用。
 - 仅允许当前活动的 HTTP/HTTPS 标签页；单次点击等待上限为 15 秒。
 
 ### 模拟输入
@@ -632,6 +633,7 @@ WebSocket 单条消息上限为 50 MB。
 | `tabs` | 定位当前聚焦窗口的活动标签页，并判断是否为 HTTP/HTTPS 页面 |
 | `debugger` | 附加活动标签页并调用 CDP `Runtime.evaluate` 执行代码，或用 `Input.dispatchMouseEvent` 派发真实点击、用 `Input.dispatchKeyEvent` 模拟键盘输入 |
 | `scripting` | 在扩展重载后向已打开的页面重新注入内容脚本，省去手动刷新 |
+| `storage` | 保存「跟随鼠标」开关，让虚拟光标跟随设置在页面之间保持一致 |
 | `host_permissions` | 允许扩展后台访问 `127.0.0.1:8090` 和 `localhost:8090`，并对 HTTP/HTTPS 页面拥有注入权限（供 `scripting` 使用） |
 | HTTP/HTTPS 内容脚本匹配 | 注入聊天 UI、采集当前页面 DOM 和上下文 |
 
@@ -931,6 +933,7 @@ Get-NetTCPConnection -LocalPort 8090 -State Listen
 
 - `/chat` 仅返回占位回答，尚未接入 LLM 或业务服务。
 - 虚拟光标会常驻显示在所有注入页面中，目前未提供开关，也不支持手动拖动。
+- 「跟随鼠标」只在顶层文档生效：指针移到跨源 iframe 上时浏览器不会把 `mousemove` 传给外层文档，虚拟光标会停在上一次位置。
 - `/click` 每次只操作一个元素，未实现双击、右键或拖拽。
 - `/type` 逐字符输入，不支持组合键（`Ctrl+C`、`Shift+方向键` 等）、粘贴、撤销和输入法候选词选字；`clear` 通过脚本清空元素值，不会触发页面的删除键逻辑；`text` 中的换行按一次回车键处理。
 - 页面交互（`/click`、`/type`）固定作用于当前聚焦窗口的活动标签页。

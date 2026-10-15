@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Page Context Chat",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "minimum_chrome_version": "116",
   "description": "Chat with a local service using the current page context.",
   "permissions": [
     "debugger",
     "tabs",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "host_permissions": [
     "http://127.0.0.1:8090/*",
