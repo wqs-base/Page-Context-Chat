@@ -77,8 +77,6 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 - 扩展先让目标元素滚动到可视区域中央，再让虚拟光标平滑移动到元素中心，最后通过 CDP `Input.dispatchMouseEvent` 在坐标点派发 `mouseMoved`、`mousePressed`、`mouseReleased`，产生 `isTrusted` 的真实鼠标点击。
 - 点击成功用绿色圆环反馈，失败用红色圆环反馈。
 - 注入的聊天组件和虚拟光标会在 DOM 被替换后自动重新挂载，兼容 GitHub 等采用 Turbo/SPA 软导航的页面。
-- 聊天面板右下角有「跟随鼠标」开关：开启后虚拟光标会带一点右下偏移、以平滑拖尾的形式跟随真实指针。`/click`、`/type` 期间跟随会显式暂停（直到后台回传动作完成的反馈），所以动作结束后光标**停在目标上**，直到你再次移动鼠标才滑回指针旁边。是否「用户真的在移动鼠标」以 `screenX` / `screenY` 判断：滚动、搜索联想下拉、以及视口变化（Chrome 调试器横幅出现/收起时会给静止指针重算 `clientX/clientY` 并补发 `mousemove`）都不会把光标带走。开关状态用 `chrome.storage.local` 全局保存，所有页面共用。
-- 虚拟光标当前位置会同步到 `#page-context-chat-cursor` 的 `data-x` / `data-y` 属性（CSS 像素、视口坐标），方便用 `/execute` 核对光标是否真的走到了目标。
 - 仅允许当前活动的 HTTP/HTTPS 标签页；单次点击等待上限为 15 秒。
 
 ### 模拟输入
@@ -89,6 +87,16 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 - 走的是真实按键事件而不是脚本改写 `value`，所以受控组件（React/Vue）的 `onChange`、`input` 事件和依赖 `keydown` 的快捷键逻辑都能被正常触发。
 - 可选 `clear` 在输入前清空目标元素（用原生 value setter + `input` 事件，兼容受控组件），可选 `submit` 在输入完成后按一次回车。
 - 可选 `delayMs` 控制逐字延迟（默认 30 毫秒，模拟真实打字节奏）；`text` 与 `delayMs` 组合的预计耗时上限为 60 秒。
+
+### 虚拟光标跟随真实鼠标
+
+- 聊天面板底部的「跟随鼠标」开关控制该能力，默认关闭；开关状态用 `chrome.storage.local` 保存，所有页面共用（扩展 1.6.0 起）。
+- 开启后虚拟光标以**右下 10/12 像素偏移**、每帧 0.3 缓动（平滑拖尾）跟随真实指针；打开开关的瞬间就会从当前位置滑向指针，不需要先晃一下鼠标。
+- `/click`、`/type` 期间跟随显式暂停：动作开始（`scrollAndPointTo()`）即按住，直到后台回传 `CLICK_FEEDBACK` / `TYPE_FEEDBACK` 才解除，并额外保留 400 毫秒宽限，另有 120 秒兜底防止回包丢失后永久按住。因此动作结束后光标**停在目标上**，直到你再次移动鼠标才滑回指针旁边。
+- 是否「用户真的在移动鼠标」以 **`screenX` / `screenY`** 判断，而不是 `clientX` / `clientY`。滚动、搜索联想下拉，以及视口变化都会让 Chrome 为**静止的**指针重算 `clientX/clientY` 并补发 `mousemove`，这类事件不会把光标带走（详见下文 FAQ）。
+- `resize` 事件只做视口边界收敛，不会重设跟随目标。
+- 虚拟光标当前位置同步在 `#page-context-chat-cursor` 的 `data-x` / `data-y` 属性上（CSS 像素、视口坐标），便于用 `POST /execute` 核对光标是否真的走到了目标。
+- 已知限制：仅在顶层文档生效，指针移到跨源 iframe 上时浏览器不会把 `mousemove` 传给外层文档（见「当前限制」）。
 
 ## 系统架构
 
@@ -327,7 +335,7 @@ Content-Type: application/json
   },
   "client": {
     "name": "page-context-chat",
-    "version": "1.1.0"
+    "version": "1.6.4"
   }
 }
 ```
@@ -702,7 +710,7 @@ python .\server\test_capture_api.py
 
 ### JavaScript alert 集成测试
 
-先以 `--allow-js-execution` 启动服务，并确保扩展 1.4.0 已重新加载：
+先以 `--allow-js-execution` 启动服务，并确保扩展 1.6.4 已重新加载：
 
 ```powershell
 conda run --no-capture-output -n agent python .\server\test_execute_api.py
@@ -721,7 +729,7 @@ conda run --no-capture-output -n agent python .\server\test_execute_api.py
 
 ### 虚拟光标点击集成测试
 
-先以 `--allow-interaction` 启动服务，并确保扩展 1.4.0 已重新加载，且目标 HTTP/HTTPS 页面处于活动状态：
+先以 `--allow-interaction` 启动服务，并确保扩展 1.6.4 已重新加载，且目标 HTTP/HTTPS 页面处于活动状态：
 
 ```powershell
 conda run --no-capture-output -n agent python .\server\test_click_api.py --selector "#some-button"
@@ -739,7 +747,7 @@ conda run --no-capture-output -n agent python .\server\test_click_api.py --selec
 
 ### 模拟输入集成测试
 
-先以 `--allow-interaction` 启动服务，并确保扩展 1.5.0 已重新加载，且目标 HTTP/HTTPS 页面中有一个可见输入框：
+先以 `--allow-interaction` 启动服务，并确保扩展 1.6.4 已重新加载，且目标 HTTP/HTTPS 页面中有一个可见输入框：
 
 ```powershell
 conda run --no-capture-output -n agent python .\server\test_type_api.py --selector "#search-input" --text "gitee" --clear --submit
@@ -901,12 +909,39 @@ python .\server\server.py --allow-interaction
 - 输入完成后页面可能需要一点时间响应，尤其是 `submit` 触发的搜索或表单提交，建议稍等再 `/capture` 核对。
 - 组合键（`Ctrl+A`、`Shift+方向键`）和多行粘贴目前不支持，`text` 中的换行会按一次回车键处理。
 
+### 「跟随鼠标」开启后，光标在动作结束后自己滑回指针旁边
+
+这是 Chrome 调试器横幅带来的**假 `mousemove`**，不是跟随逻辑失灵。
+
+`/click`、`/type`、`/execute` 都会 attach 调试器，Chrome 会在页面顶部插入一条调试横幅，视口高度瞬时变化（实测 `innerHeight` 773 → 717，差 56 像素），约 5 秒后横幅收起又变回来。这两次变化都会让 Chrome 为**静止的**指针重算 `clientX/clientY` 并补发 `mousemove`，`clientY` 的差值正好等于横幅高度。
+
+扩展 **1.6.4** 起以 `screenX` / `screenY` 判断指针是否真的移动过，这类事件会被忽略；`resize` 回调也不再重设跟随目标。可以在动作结束后用 `/execute` 观察现象与来源：
+
+```javascript
+// 光标当前位置（CSS 像素、视口坐标）
+const cursor = document.getElementById("page-context-chat-cursor");
+cursor.dataset.x + "," + cursor.dataset.y;
+
+// 同时记录事件：cy 在变、sx/sy 不变的那些就是假事件
+document.addEventListener("mousemove",
+  (e) => console.log(e.clientX, e.clientY, e.screenX, e.screenY), true);
+```
+
+实测日志（光标停在目标 `460,74` 纹丝不动，期间到达的全是假事件）：
+
+```text
+{t:28730, cx:1391, cy:502, sx:1391, sy:674}   // 物理指针真实位置
+{t:28746, cx:1391, cy:518, sx:1391, sy:674}   // clientY 在变 → 视口重算
+{t:28839, ev:"resize", h:773}                 // 横幅收起
+{t:28855, cx:1391, cy:553, sx:1391, sy:674}   // 又补了一发
+```
+
 ### `/click` 返回 `422 click_failed`
 
 - 确认选择器能命中元素，且元素位于可视区域内（扩展会自动滚动到元素中央）。
 - 确认当前活动页是 HTTP/HTTPS 页面，且扩展已获得 `debugger` 权限。
 - 如果 Chrome DevTools 已附加到同一标签页，点击可能失败，关闭后重试。
-- 确认页面已刷新，加载的是包含虚拟光标的 1.4.0 内容脚本。
+- 确认页面已刷新，加载的是包含虚拟光标的 1.6.4 内容脚本。
 
 ### `/execute` 返回 `422 execution_failed`
 
