@@ -199,7 +199,7 @@
       message,
       history: history.slice(-10),
       context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.6.1" }
+      client: { name: "page-context-chat", version: "1.6.2" }
     };
 
     try {
@@ -417,10 +417,16 @@
     }
   }
 
-  // 无论开关是否打开都记录指针位置，这样打开跟随的瞬间光标就会滑向指针。
+  // 记录指针位置，但只有在坐标真的变化时才认为“用户在移动鼠标”。
+  // 滚动、DOM 变化（例如输入框弹出的搜索联想下拉）触发的合成 mousemove 会带着
+  // 同一坐标重复上报，不能让它把光标从刚操作完的目标上拽走。
   document.addEventListener("mousemove", (event) => {
+    const moved = event.clientX !== pointerX || event.clientY !== pointerY;
     pointerX = event.clientX;
     pointerY = event.clientY;
+    if (!moved || isFollowHeld()) {
+      return;
+    }
     updateFollowTarget();
   }, { capture: true, passive: true });
 
