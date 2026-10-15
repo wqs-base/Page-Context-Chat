@@ -31,7 +31,7 @@ description: 运行和试用 Page Context Chat 浏览器页面助手（本仓库
 
 1. **安装扩展**：解压 `release/page-context-chat-extension.zip`，或用源码目录 `extension/`。打开 `chrome://extensions/` → 开启「开发者模式」→「加载已解压的扩展程序」→ 选择解压出的目录（或 `extension` 目录）。
 2. **改过代码/MANIFEST 就必须重新加载**：在 `chrome://extensions/` 点该扩展的「重新加载」。
-3. **重新加载扩展后一般无需刷新页面**。扩展 1.4.0 起会在后台启动时自动探测并重新注入内容脚本，孤儿脚本也会自行撤下节点。若个别页面仍报 `Receiving end does not exist` / `503`，让用户手动刷新一次即可（旧版本或权限未授予 `scripting` 时仍需刷新）。
+3. **重新加载扩展后无需刷新页面**。扩展 1.4.0 起会在后台启动时自动探测并重新注入内容脚本，孤儿脚本也会自行撤下节点（已在 1.4.0 实测确认：重载扩展后不刷新任何页面，`/capture` 立即恢复正常）。若个别页面仍报 `Receiving end does not exist` / `503`，多为受保护页面或权限未授予 `scripting`；让用户刷新一次作为兜底即可。
 4. **让一个普通 http/https 页面成为当前活动标签**（且位于当前聚焦的 Chrome 窗口）。`chrome://`、Chrome 应用商店、扩展页等受保护页面无法采集或点击，会返回 `422 page_unavailable`。
 5. 可选的目视检查：页面右下角出现「页面助手」按钮、页面上出现虚拟光标（常驻显示）。
 

@@ -13,7 +13,7 @@ Page Context Chat 是一个 Manifest V3 Chrome Extension 和本地 Python 服务
 ### 页面聊天组件
 
 - 自动注入到所有普通 HTTP/HTTPS 页面。
-- 扩展重新加载或更新后，会自动向已打开的页面重新注入内容脚本，通常无需手动刷新。
+- 扩展重新加载或更新后，会自动向已打开的页面重新注入内容脚本，无需手动刷新（1.4.0 起，已实测验证）。
 - 使用关闭的 Shadow DOM 隔离页面样式和组件样式。
 - 支持右下角按钮、响应式聊天面板、发送状态和错误消息。
 - `Enter` 发送，`Shift+Enter` 换行。
@@ -215,7 +215,7 @@ python .\server\server.py --allow-js-execution --allow-interaction
 5. 接受扩展申请的权限（`debugger`、`tabs`、`scripting`）。
 6. 打开或刷新一个 HTTP/HTTPS 页面。
 
-代码或 Manifest 更新后，在 `chrome://extensions/` 中点击扩展的“重新加载”即可。扩展 1.4.0 起会在后台启动时自动探测并重新注入内容脚本，**通常无需再手动刷新页面**；若个别页面仍不生效，刷新一次即可（见下文「重载扩展后内容脚本失联」）。
+代码或 Manifest 更新后，在 `chrome://extensions/` 中点击扩展的“重新加载”即可。扩展 1.4.0 起会在后台启动时自动探测并重新注入内容脚本，**无需再手动刷新页面**（已实测验证）；若个别页面仍不生效，刷新一次作为兜底（见下文「重载扩展后页面报 `Receiving end does not exist`」）。
 
 使用分发版本时，改为解压 `release/page-context-chat-extension.zip`，再选择解压出的目录，详见「[安装已打包的扩展](#安装已打包的扩展)」。
 
@@ -716,7 +716,9 @@ Stop-Process -Id $connection.OwningProcess
 
 重新加载扩展会让**已打开页面里的旧内容脚本失去 `chrome.runtime` 通道**（“孤儿脚本”）：控件还在，但消息通道已断，于是 `/capture` 报 `Receiving end does not exist`。
 
-扩展 1.4.0 起会自动处理：后台启动时会逐个探测已打开页面（发一条 `PING_PAGE_CONTEXT_CHAT`），发现没有接收端就通过 `chrome.scripting.executeScript` 重新注入 `content.js`；孤儿脚本自身也会检测到通道失效并撤下自己的节点，把位置让给新脚本。因此**通常不需要再手动刷新页面**。
+扩展 1.4.0 起会自动处理：后台启动时会逐个探测已打开页面（发一条 `PING_PAGE_CONTEXT_CHAT`），发现没有接收端就通过 `chrome.scripting.executeScript` 重新注入 `content.js`；孤儿脚本自身也会检测到通道失效并撤下自己的节点，把位置让给新脚本。因此**不再需要手动刷新页面**。
+
+> 已在扩展 1.4.0 实测验证：重载扩展后**不做任何页面刷新**，对同一个已打开的页面执行 `POST /capture` 立即返回 200（修复前该页面会一直报 `Receiving end does not exist`）。
 
 如果仍不生效，检查：扩展是否已重新加载并授予了 `scripting` 权限；该页面是否为受保护页面（这类页面本来就不能注入）。
 
