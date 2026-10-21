@@ -7,8 +7,6 @@
 
   const MAX_TEXT_LENGTH = 30000;
   const MAX_ELEMENTS = 80;
-  const history = [];
-  let isSending = false;
 
   const host = document.createElement("div");
   host.id = "page-context-chat-root";
@@ -18,7 +16,7 @@
   style.textContent = `
     :host { all: initial; }
     *, *::before, *::after { box-sizing: border-box; }
-    .launcher, .panel, button, textarea { font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    .launcher, .panel, button { font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif; }
     .launcher {
       position: fixed; right: 20px; bottom: 20px; z-index: 2147483647;
       height: 44px; padding: 0 16px; border: 1px solid #1c5f4a; border-radius: 6px;
@@ -26,18 +24,17 @@
       box-shadow: 0 8px 24px rgba(14, 38, 31, .2); cursor: pointer;
     }
     .launcher:hover { background: #125640; }
-    .launcher:focus-visible, button:focus-visible, textarea:focus-visible {
+    .launcher:focus-visible, button:focus-visible, input:focus-visible {
       outline: 2px solid #e1a03d; outline-offset: 2px;
     }
     .panel {
       position: fixed; right: 20px; bottom: 76px; z-index: 2147483647;
-      width: min(380px, calc(100vw - 24px)); height: min(560px, calc(100vh - 96px));
-      display: none; grid-template-rows: auto minmax(0, 1fr) auto;
-      overflow: hidden; border: 1px solid #c8cfcc; border-radius: 8px;
+      width: min(360px, calc(100vw - 24px));
+      display: none; overflow: hidden; border: 1px solid #c8cfcc; border-radius: 8px;
       background: #f7f9f8; color: #15211d; box-shadow: 0 18px 50px rgba(18, 37, 31, .24);
       font-size: 14px; line-height: 1.5;
     }
-    .panel.open { display: grid; }
+    .panel.open { display: block; }
     .header {
       min-height: 58px; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px;
       border-bottom: 1px solid #dce2df; background: #fff;
@@ -50,81 +47,66 @@
       color: #42504b; font-size: 22px; line-height: 1; cursor: pointer;
     }
     .close:hover { background: #edf1ef; }
-    .messages { overflow-y: auto; padding: 16px; scrollbar-width: thin; }
-    .empty { margin: 30px auto; max-width: 260px; color: #65716d; text-align: center; font-size: 13px; }
-    .message { display: flex; margin: 0 0 12px; }
-    .message.user { justify-content: flex-end; }
-    .bubble {
-      max-width: 88%; padding: 9px 11px; border-radius: 7px; white-space: pre-wrap;
-      overflow-wrap: anywhere; box-shadow: 0 1px 1px rgba(20, 40, 33, .06);
+    .settings { padding: 4px 0; background: #f7f9f8; }
+    .setting {
+      display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px;
+      cursor: pointer; user-select: none;
     }
-    .user .bubble { background: #176b52; color: #fff; border-bottom-right-radius: 2px; }
-    .assistant .bubble { border: 1px solid #d8dfdc; background: #fff; color: #1d2925; border-bottom-left-radius: 2px; }
-    .assistant.error .bubble { border-color: #e3a3a0; background: #fff4f3; color: #8b2925; }
-    .composer { padding: 10px; border-top: 1px solid #dce2df; background: #fff; }
-    textarea {
-      display: block; width: 100%; min-height: 70px; max-height: 150px; resize: vertical;
-      border: 1px solid #aeb9b5; border-radius: 5px; padding: 9px 10px; background: #fff;
-      color: #15211d; font-size: 14px; line-height: 1.45; letter-spacing: 0;
+    .setting:hover { background: #eef3f0; }
+    .setting input { width: 15px; height: 15px; margin: 3px 0 0; accent-color: #176b52; cursor: pointer; }
+    .setting-text { min-width: 0; flex: 1; }
+    .setting-title { display: block; font-size: 13px; font-weight: 600; }
+    .setting-hint { display: block; margin-top: 2px; color: #697570; font-size: 11px; }
+    .footer {
+      padding: 8px 16px 12px; border-top: 1px solid #dce2df;
+      background: #fff; color: #697570; font-size: 11px;
     }
-    textarea::placeholder { color: #7b8782; }
-    .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
-    .context-note { color: #697570; font-size: 11px; }
-    .follow {
-      display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
-      color: #697570; font-size: 11px; cursor: pointer; user-select: none;
-    }
-    .follow input { width: 13px; height: 13px; margin: 0; accent-color: #176b52; cursor: pointer; }
-    .send {
-      min-width: 68px; height: 34px; padding: 0 14px; border: 1px solid #1c5f4a; border-radius: 5px;
-      background: #176b52; color: #fff; font-size: 13px; font-weight: 650; letter-spacing: 0; cursor: pointer;
-    }
-    .send:hover { background: #125640; }
-    .send:disabled { border-color: #a8b2ae; background: #a8b2ae; cursor: wait; }
     @media (max-width: 520px) {
       .launcher { right: 12px; bottom: 12px; }
-      .panel { right: 12px; bottom: 64px; height: min(620px, calc(100vh - 76px)); }
+      .panel { right: 12px; bottom: 64px; }
     }
   `;
 
-  const launcher = createElement("button", "launcher", "页面助手");
+  const launcher = createElement("button", "launcher", "设置");
   launcher.type = "button";
   launcher.setAttribute("aria-expanded", "false");
 
   const panel = createElement("section", "panel");
   panel.setAttribute("role", "dialog");
-  panel.setAttribute("aria-label", "页面上下文聊天");
+  panel.setAttribute("aria-label", "页面助手设置");
   panel.innerHTML = `
     <header class="header">
       <div class="title-wrap">
-        <h2 class="title">页面助手</h2>
+        <h2 class="title">页面助手设置</h2>
         <div class="status">本地服务 127.0.0.1:8090</div>
       </div>
       <button class="close" type="button" aria-label="关闭">&times;</button>
     </header>
-    <main class="messages" aria-live="polite">
-      <p class="empty">输入问题后，将把当前页面的完整 HTML 和页面上下文发送到本地服务。</p>
-    </main>
-    <form class="composer">
-      <textarea name="message" aria-label="消息" placeholder="询问当前页面内容..." required></textarea>
-      <div class="actions">
-        <span class="context-note">发送完整页面 HTML</span>
-        <label class="follow" title="开启后虚拟光标会跟随真实鼠标指针">
-          <input type="checkbox"> 跟随鼠标
-        </label>
-        <button class="send" type="submit">发送</button>
-      </div>
-    </form>
+    <div class="settings">
+      <label class="setting">
+        <input type="checkbox" name="cursorEnabled">
+        <span class="setting-text">
+          <span class="setting-title">虚拟光标</span>
+          <span class="setting-hint">显示虚拟光标，并跟随真实鼠标指针（右下 10/12 像素缓动拖尾）；取消勾选则隐藏且不再跟随，/click、/type 仍正常执行</span>
+        </span>
+      </label>
+      <label class="setting">
+        <input type="checkbox" name="allowJsExecution">
+        <span class="setting-text">
+          <span class="setting-title">允许执行 JS</span>
+          <span class="setting-hint">允许本地服务通过 /execute 在当前页主世界执行 JavaScript</span>
+        </span>
+      </label>
+    </div>
+    <div class="footer">设置对所有页面生效，保存在扩展本地存储中。</div>
   `;
 
   shadow.append(style, launcher, panel);
   document.documentElement.appendChild(host);
 
   const closeButton = panel.querySelector(".close");
-  const messages = panel.querySelector(".messages");
-  const form = panel.querySelector(".composer");
-  const textarea = panel.querySelector("textarea");
-  const sendButton = panel.querySelector(".send");
+  const cursorToggle = panel.querySelector('input[name="cursorEnabled"]');
+  const jsExecutionToggle = panel.querySelector('input[name="allowJsExecution"]');
 
   function createElement(tag, className, text = "") {
     const element = document.createElement(tag);
@@ -136,10 +118,7 @@
   function setOpen(open) {
     panel.classList.toggle("open", open);
     launcher.setAttribute("aria-expanded", String(open));
-    launcher.textContent = open ? "隐藏助手" : "页面助手";
-    if (open) {
-      textarea.focus();
-    }
+    launcher.textContent = open ? "隐藏设置" : "设置";
   }
 
   function normalizeText(value, maxLength = MAX_TEXT_LENGTH) {
@@ -181,61 +160,9 @@
     };
   }
 
-  function appendMessage(role, text, isError = false) {
-    messages.querySelector(".empty")?.remove();
-    const row = createElement("div", `message ${role}${isError ? " error" : ""}`);
-    row.appendChild(createElement("div", "bubble", text));
-    messages.appendChild(row);
-    messages.scrollTop = messages.scrollHeight;
-  }
-
-  async function sendMessage(message) {
-    isSending = true;
-    sendButton.disabled = true;
-    sendButton.textContent = "发送中";
-    appendMessage("user", message);
-
-    const payload = {
-      message,
-      history: history.slice(-10),
-      context: collectPageContext(),
-      client: { name: "page-context-chat", version: "1.6.4" }
-    };
-
-    try {
-      const response = await chrome.runtime.sendMessage({ type: "PAGE_CONTEXT_CHAT", payload });
-      if (!response?.ok) {
-        throw new Error(response?.error || "本地服务请求失败");
-      }
-      history.push({ role: "user", content: message }, { role: "assistant", content: response.reply });
-      appendMessage("assistant", response.reply);
-    } catch (error) {
-      appendMessage("assistant", error.message, true);
-    } finally {
-      isSending = false;
-      sendButton.disabled = false;
-      sendButton.textContent = "发送";
-      textarea.focus();
-    }
-  }
-
   launcher.addEventListener("click", () => setOpen(!panel.classList.contains("open")));
   closeButton.addEventListener("click", () => setOpen(false));
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const message = textarea.value.trim();
-    if (!message || isSending) {
-      return;
-    }
-    textarea.value = "";
-    sendMessage(message);
-  });
-  textarea.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      form.requestSubmit();
-    }
-  });
+
   // --- 虚拟光标 ---------------------------------------------------------
   const CURSOR_MOVE_DURATION_MS = 420;
 
@@ -280,6 +207,13 @@
   let cursorX = Math.round(window.innerWidth / 2);
   let cursorY = Math.round(window.innerHeight / 2);
   let cursorAnimation = null;
+  // 「显示虚拟光标」开关：关闭时只是不绘制（宿主 display:none），位置仍照常维护，
+  // 所以 /click、/type 的动作和 data-x / data-y 核对都不受影响。
+  let cursorVisible = true;
+
+  function applyCursorVisibility() {
+    cursorHost.style.display = cursorVisible ? "" : "none";
+  }
 
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
@@ -346,14 +280,15 @@
   const FOLLOW_OFFSET_X = 10;
   const FOLLOW_OFFSET_Y = 12;
   const FOLLOW_EASING = 0.3;
-  const FOLLOW_STORAGE_KEY = "cursorFollow";
+  // 设置项在 chrome.storage.local 里的键名（对所有页面共享）。
+  // 「虚拟光标」是一个勾选项同时管显示和跟随，所以只有一个键。
+  const CURSOR_ENABLED_STORAGE_KEY = "cursorEnabled";
+  const JS_EXECUTION_STORAGE_KEY = "allowJsExecution";
   // 自动化动作（/click、/type）期间及结束后一小段时间内忽略跟随，
   // 否则滚动引发的合成 mousemove、CDP 派发的 mouseMoved 会把光标从目标拽回指针。
   const FOLLOW_RELEASE_DELAY_MS = 400;
   const FOLLOW_HOLD_MAX_MS = 120000; // 兜底：动作回包丢失时最多按住 2 分钟
 
-  const followToggle = panel.querySelector(".follow input");
-  const followStorage = chrome.storage?.local ?? null;
   let followEnabled = false;
   let followFrame = null;
   let followTarget = null;
@@ -450,20 +385,73 @@
     updateFollowTarget();
   }, { capture: true, passive: true });
 
-  followToggle.addEventListener("change", () => {
-    setFollowEnabled(followToggle.checked);
-    if (followStorage) {
-      followStorage.set({ [FOLLOW_STORAGE_KEY]: followToggle.checked }).catch(() => {});
-    }
+  // --- 设置面板 -----------------------------------------------------------
+  // 两个勾选项对所有页面共享，存在 chrome.storage.local：
+  //   cursorEnabled    虚拟光标：显示 + 跟随鼠标（content 脚本自己消费）
+  //   allowJsExecution 允许执行 JS（由后台脚本在 /execute 前读取并拦截）
+  const storage = chrome.storage?.local ?? null;
+
+  function saveSetting(key, value) {
+    storage?.set({ [key]: value }).catch(() => {});
+  }
+
+  // 显示和跟随来自同一个勾选项，避免「勾了跟随却没显示」这类半开状态。
+  function setCursorEnabled(enabled) {
+    cursorVisible = enabled;
+    applyCursorVisibility();
+    setFollowEnabled(enabled);
+  }
+
+  cursorToggle.addEventListener("change", () => {
+    setCursorEnabled(cursorToggle.checked);
+    saveSetting(CURSOR_ENABLED_STORAGE_KEY, cursorToggle.checked);
   });
 
-  if (followStorage) {
-    followStorage.get(FOLLOW_STORAGE_KEY)
-      .then((stored) => {
-        followToggle.checked = Boolean(stored?.[FOLLOW_STORAGE_KEY]);
-        setFollowEnabled(followToggle.checked);
-      })
-      .catch(() => {});
+  jsExecutionToggle.addEventListener("change", () => {
+    saveSetting(JS_EXECUTION_STORAGE_KEY, jsExecutionToggle.checked);
+  });
+
+  // 默认值：虚拟光标默认开启（显示 + 跟随），允许执行 JS 默认开启。
+  // 迁移：1.7.0 之前「显示」和「跟随」是两个键，只有 cursorEnabled 缺失时才回退到旧的
+  // cursorVisible（旧的「跟随」默认关闭，拿它当初始值会把光标默认变成不可见）。
+  const LEGACY_CURSOR_VISIBLE_KEY = "cursorVisible";
+
+  function resolveCursorEnabled(stored) {
+    if (stored?.[CURSOR_ENABLED_STORAGE_KEY] !== undefined) {
+      return stored[CURSOR_ENABLED_STORAGE_KEY] !== false;
+    }
+    if (stored?.[LEGACY_CURSOR_VISIBLE_KEY] !== undefined) {
+      return stored[LEGACY_CURSOR_VISIBLE_KEY] !== false;
+    }
+    return true;
+  }
+
+  function applyStoredSettings(stored) {
+    cursorToggle.checked = resolveCursorEnabled(stored);
+    setCursorEnabled(cursorToggle.checked);
+    jsExecutionToggle.checked = stored?.[JS_EXECUTION_STORAGE_KEY] !== false;
+  }
+
+  const SETTING_KEYS = [CURSOR_ENABLED_STORAGE_KEY, JS_EXECUTION_STORAGE_KEY, LEGACY_CURSOR_VISIBLE_KEY];
+
+  if (storage) {
+    storage.get(SETTING_KEYS)
+      .then(applyStoredSettings)
+      .catch(() => applyStoredSettings(null));
+    // 设置是全局的，但每个页面各自持有一份运行时状态：在别的标签页改了勾选，
+    // 已打开的页面必须跟着刷新，否则「设置对所有页面生效」只在刷新后才成立。
+    if (storage.onChanged?.addListener) {
+      storage.onChanged.addListener((changes) => {
+        if (![CURSOR_ENABLED_STORAGE_KEY, JS_EXECUTION_STORAGE_KEY].some((key) => key in changes)) {
+          return;
+        }
+        storage.get(SETTING_KEYS)
+          .then(applyStoredSettings)
+          .catch(() => {});
+      });
+    }
+  } else {
+    applyStoredSettings(null);
   }
 
   const CLICKABLE_SELECTOR = [
@@ -709,7 +697,7 @@
       sendResponse({ ok: true });
       return false;
     }
-    if (request?.type === "TOGGLE_PAGE_CONTEXT_CHAT") {
+    if (request?.type === "TOGGLE_PAGE_CONTEXT_SETTINGS") {
       setOpen(!panel.classList.contains("open"));
       return false;
     }

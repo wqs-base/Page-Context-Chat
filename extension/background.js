@@ -1,8 +1,8 @@
-const CHAT_ENDPOINT = "http://127.0.0.1:8090/chat";
 const SOCKET_ENDPOINT = "ws://127.0.0.1:8090/ws";
-const REQUEST_TIMEOUT_MS = 30000;
 const KEEPALIVE_INTERVAL_MS = 20000;
 const MAX_RECONNECT_DELAY_MS = 10000;
+// 设置面板里的「允许执行 JS」：关掉后 /execute 一律被扩展侧拦截。
+const JS_EXECUTION_STORAGE_KEY = "allowJsExecution";
 
 let socket = null;
 let reconnectTimer = null;
@@ -36,7 +36,7 @@ function connectSocket() {
   socket = new WebSocket(SOCKET_ENDPOINT);
   socket.addEventListener("open", () => {
     reconnectDelay = 1000;
-    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.6.4" });
+    sendSocketMessage({ type: "hello", client: "page-context-chat", version: "1.7.0" });
     clearInterval(keepaliveTimer);
     keepaliveTimer = setInterval(() => sendSocketMessage({ type: "ping" }), KEEPALIVE_INTERVAL_MS);
   });
@@ -90,9 +90,32 @@ async function captureActivePage(requestId) {
   }
 }
 
+async function isJsExecutionAllowed() {
+  try {
+    const stored = await chrome.storage.local.get(JS_EXECUTION_STORAGE_KEY);
+    return stored?.[JS_EXECUTION_STORAGE_KEY] !== false;
+  } catch {
+    // 读不到设置时按默认值（允许）处理，避免扩展权限异常时把功能整体卡死。
+    return true;
+  }
+}
+
 async function executeInActivePage(requestId, code) {
   let debuggee = null;
   try {
+    if (!(await isJsExecutionAllowed())) {
+      // 与服务器端 403 js_execution_disabled 区分开：这是扩展侧的用户设置。
+      sendSocketMessage({
+        type: "execute_result",
+        requestId,
+        ok: false,
+        error: {
+          code: "js_execution_disabled",
+          message: "扩展设置中已关闭「允许执行 JS」，请在页面助手的设置里勾选后重试"
+        }
+      });
+      return;
+    }
     if (typeof code !== "string" || !code.trim()) {
       throw new Error("服务端未提供有效的 JavaScript 代码");
     }
@@ -345,44 +368,9 @@ async function typeInActivePage(requestId, message) {
   }
 }
 
-chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
-  if (request?.type !== "PAGE_CONTEXT_CHAT") {
-    return false;
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  fetch(CHAT_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request.payload),
-    signal: controller.signal
-  })
-    .then(async (response) => {
-      const data = await response.json().catch(() => null);
-      if (!response.ok) {
-        throw new Error(data?.error?.message || data?.error || `本地服务返回 HTTP ${response.status}`);
-      }
-      if (typeof data?.reply !== "string") {
-        throw new Error("本地服务响应缺少 reply 字段");
-      }
-      sendResponse({ ok: true, reply: data.reply });
-    })
-    .catch((error) => {
-      const message = error.name === "AbortError"
-        ? "本地服务响应超时"
-        : `无法连接本地服务：${error.message}（本地服务可能未启动，请先启动 page-context-chat-server.exe 后重试）`;
-      sendResponse({ ok: false, error: message });
-    })
-    .finally(() => clearTimeout(timeoutId));
-
-  return true;
-});
-
 chrome.action.onClicked.addListener((tab) => {
   if (tab.id) {
-    chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PAGE_CONTEXT_CHAT" }).catch(() => {});
+    chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_PAGE_CONTEXT_SETTINGS" }).catch(() => {});
   }
 });
 

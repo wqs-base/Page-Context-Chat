@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Page Context Chat",
-  "version": "1.6.4",
+  "version": "1.7.0",
   "minimum_chrome_version": "116",
-  "description": "Chat with a local service using the current page context.",
+  "description": "通过本地服务采集当前页面上下文，并在页面上提供设置面板（跟随鼠标 / 虚拟光标 / 执行 JS）。",
   "permissions": [
     "debugger",
     "tabs",
@@ -20,7 +20,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "打开页面助手"
+    "default_title": "打开页面助手设置"
   },
   "content_scripts": [
     {
